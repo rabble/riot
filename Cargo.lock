@@ -5019,6 +5019,7 @@ version = "0.1.0"
 dependencies = [
  "bab_rs",
  "chacha20poly1305",
+ "data-encoding",
  "ed25519-dalek 2.2.0",
  "getrandom 0.2.17",
  "hifitime",
@@ -5028,6 +5029,8 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
+ "tracing",
+ "tracing-test",
  "ufotofu",
  "willow25",
  "zeroize",
@@ -5047,6 +5050,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-oslog",
+ "tracing-subscriber",
+ "tracing-test",
  "uniffi",
  "willow25",
  "zeroize",
@@ -7502,6 +7509,18 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-oslog"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d76902d2a8d5f9f55a81155c08971734071968c90f2d9bfe645fe700579b2950"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]
