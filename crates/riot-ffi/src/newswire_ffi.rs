@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 
 use riot_core::newswire::{
     build_share_reference, create_signed_editorial_action, create_signed_news_comment,
-    create_signed_news_post, create_signed_news_reaction, create_signed_space_descriptor,
+    create_signed_news_post, create_signed_news_reaction_at, create_signed_space_descriptor,
     decode_share_reference, encode_share_reference, encode_space_descriptor, load_space_descriptor,
-    project_space, AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1,
-    NewsPostV1, NewsReactionV1, NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1,
-    RequestKind, RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
+    AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1,
+    NewsReactionV1, NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1,
+    ReactionKind, RequestKind, RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
 };
 use riot_core::profile::path::SUBSPACE_ID_BYTES;
 use riot_core::profile::resolver::{key_tag, resolve_display_names, sanitize_display_name};
@@ -150,6 +150,13 @@ pub struct NewswireProjectedPost {
     /// The Willow ordering key the open wire is sorted by (newest first),
     /// surfaced so a client can merge projections without re-deriving it.
     pub tai_j2000_micros: u64,
+    /// The post's creation instant as UTC Unix seconds, recovered from
+    /// `tai_j2000_micros` (which is TAI/J2000 microseconds, an ordering value —
+    /// NOT a wall clock). This is the only wall-clock time a client needs to
+    /// render a real "2h ago" for the row. `None` when the entry timestamp is 0
+    /// or falls outside the representable Unix range, so the client can fall back
+    /// gracefully rather than show a bogus 1970 time.
+    pub created_at_unix_seconds: Option<u64>,
     pub headline: Option<String>,
     pub body: Option<String>,
     pub language: String,
@@ -176,6 +183,8 @@ pub struct NewswireProjectedPost {
 pub struct NewswireReactionTally {
     pub kind: String,
     pub count: u32,
+    /// Authoritative latest-wins state for the currently open profile.
+    pub reacted_by_me: bool,
 }
 
 /// A projected communal reply in the collective view. Carries its
@@ -412,14 +421,17 @@ impl MobileProfile {
             let descriptor =
                 riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id)
                     .map_err(map_newswire_store_error)?;
+            let snapshot =
+                next_reaction_snapshot(profile, descriptor_id, parent_id, reaction_kind)?;
             let reaction = NewsReactionV1 {
                 space_descriptor_entry_id: descriptor_id,
                 parent_entry_id: parent_id,
                 kind: reaction_kind,
                 active,
             };
-            let signed = create_signed_news_reaction(&profile.author, &descriptor, reaction)
-                .map_err(map_newswire_error)?;
+            let signed =
+                create_signed_news_reaction_at(&profile.author, &descriptor, snapshot, reaction)
+                    .map_err(map_newswire_error)?;
             import_signed_newswire(profile, &signed)
         })
     }
@@ -468,8 +480,13 @@ impl MobileProfile {
         with_active(&self.inner, |profile| {
             let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
             let clock = ProjectionClockV1::system().map_err(|_| MobileError::ClockUnavailable)?;
-            let projection = project_space(&profile.store, descriptor_id, clock)
-                .map_err(map_newswire_store_error)?;
+            let projection = riot_core::newswire::project_space_for_viewer(
+                &profile.store,
+                descriptor_id,
+                clock,
+                Some(*profile.author.subspace_id().as_bytes()),
+            )
+            .map_err(map_newswire_store_error)?;
             // Resolve every known name ONCE, then render each author against it.
             // A rename repairs every row that person ever touched.
             let names = resolve_display_names(&profile.store).map_err(|_| MobileError::Internal)?;
@@ -646,6 +663,86 @@ pub fn newswire_decode_share_reference(
     Ok(NewswireShareReference::from_core(&reference))
 }
 
+fn next_reaction_snapshot(
+    profile: &crate::mobile_state::LocalProfile,
+    descriptor_id: riot_core::willow::EntryId,
+    parent_id: riot_core::willow::EntryId,
+    kind: ReactionKind,
+) -> Result<riot_core::willow::ClockSnapshot, MobileError> {
+    let system = riot_core::willow::system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
+    next_reaction_snapshot_from(profile, descriptor_id, parent_id, kind, system)
+}
+
+fn next_reaction_snapshot_from(
+    profile: &crate::mobile_state::LocalProfile,
+    descriptor_id: riot_core::willow::EntryId,
+    parent_id: riot_core::willow::EntryId,
+    kind: ReactionKind,
+    mut system: riot_core::willow::ClockSnapshot,
+) -> Result<riot_core::willow::ClockSnapshot, MobileError> {
+    let signer_id = *profile.author.subspace_id().as_bytes();
+    let previous = riot_core::newswire::load_space_records(&profile.store, descriptor_id)
+        .map_err(map_newswire_store_error)?
+        .into_iter()
+        .filter(|record| record.signer_id() == signer_id)
+        .filter_map(|record| match record.payload() {
+            riot_core::newswire::NewswirePayload::NewsReaction(reaction)
+                if reaction.space_descriptor_entry_id == descriptor_id
+                    && reaction.parent_entry_id == parent_id
+                    && reaction.kind == kind =>
+            {
+                Some(record.tai_j2000_micros())
+            }
+            _ => None,
+        })
+        .max();
+    if let Some(previous) = previous {
+        system.tai_j2000_micros = system.tai_j2000_micros.max(
+            previous
+                .checked_add(1)
+                .ok_or(MobileError::ClockUnavailable)?,
+        );
+    }
+    Ok(system)
+}
+
+fn validate_newswire_preflight(
+    mut predicted_live_ids: Vec<riot_core::willow::EntryId>,
+    mut next_inventory_ids: Vec<riot_core::willow::EntryId>,
+    effects: &[(
+        riot_core::willow::EntryId,
+        riot_core::import::join::JoinEffect,
+    )],
+) -> Result<(), MobileError> {
+    for (entry_id, effect) in effects {
+        match effect {
+            riot_core::import::join::JoinEffect::Winner { pruned_entry_ids } => {
+                predicted_live_ids.retain(|known| !pruned_entry_ids.contains(known));
+                if !predicted_live_ids.contains(entry_id) {
+                    predicted_live_ids.push(*entry_id);
+                }
+            }
+            riot_core::import::join::JoinEffect::AlreadyPresent => {
+                if !predicted_live_ids.contains(entry_id) {
+                    return Err(MobileError::Internal);
+                }
+            }
+            riot_core::import::join::JoinEffect::NotLive { .. } => {
+                // Valid Newswire v1 reactions have timestamp/digest-unique sibling
+                // paths, so a reaction cannot normally reach this arm without a
+                // wire-format change. Keep the generic import boundary fail-closed.
+                return Err(MobileError::InvalidInput);
+            }
+        }
+    }
+    predicted_live_ids.sort_unstable();
+    next_inventory_ids.sort_unstable();
+    if next_inventory_ids != predicted_live_ids {
+        return Err(MobileError::Internal);
+    }
+    Ok(())
+}
+
 /// Imports a signed newswire record into the store via the standard
 /// preview/plan/commit path, then returns the entry ID + signed bytes.
 fn import_signed_newswire(
@@ -654,21 +751,36 @@ fn import_signed_newswire(
 ) -> Result<NewswireSignedRecord, MobileError> {
     let bundle_bytes = riot_core::import::encode_bundle(std::slice::from_ref(&signed.signed))
         .map_err(|_| MobileError::Internal)?;
+    crate::mobile_state::ensure_complete_sync_inventory(profile)?;
+    let next_inventory = crate::mobile_state::prospective_sync_inventory(
+        profile,
+        std::slice::from_ref(&signed.signed),
+    )?;
     profile.preview = None;
     profile.plan = None;
     let preview =
         crate::mobile_state::inspect_core(&profile.store, &bundle_bytes, "local-newswire-sign")?;
     let plan = preview.plan_all().map_err(map_core_error_inner)?;
+    let effects = plan.preflight_effects().map_err(map_core_error_inner)?;
+
+    let predicted_live_ids = crate::mobile_state::active_namespace_live_ids(profile)?;
+    let next_inventory_ids: Vec<_> = next_inventory
+        .iter()
+        .map(|entry| riot_core::willow::entry_id(&entry.entry_bytes))
+        .collect();
+    validate_newswire_preflight(predicted_live_ids, next_inventory_ids, &effects)?;
+
     use riot_core::session::CommitOutcome;
     match plan.commit().map_err(map_core_error_inner)? {
-        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+        CommitOutcome::Committed(_) => {
+            profile.sync_inventory = next_inventory;
+        }
+        CommitOutcome::NoChanges(duplicate) => {
+            if !duplicate.all_entry_ids_live() {
+                return Err(MobileError::Internal);
+            }
+        }
     }
-    // Risk 16: track the committed newswire entry in the active community's sync
-    // inventory so it can traverse the nearby bridge — without this, newswire
-    // content could never be shared (a followed community's Home stayed empty
-    // forever). A newswire entry is a live entry in this namespace, so this keeps
-    // the inventory complete exactly as the alert sign/import paths do.
-    crate::mobile_state::track_committed_entry(profile, &signed.signed)?;
     Ok(NewswireSignedRecord {
         entry_id: hex(&signed.entry_id),
         signed_bytes: bundle_bytes,
@@ -694,6 +806,19 @@ fn render_author(
     }
 }
 
+/// Recover a post/comment's creation instant (UTC Unix seconds) from its Willow
+/// entry timestamp (TAI/J2000 microseconds). A 0 timestamp — or any value the
+/// converter rejects as out-of-range — yields `None` so the client renders a
+/// graceful fallback instead of a bogus wall-clock time. Uses the core inverse
+/// converter so no epoch/unit math is hand-rolled at the FFI boundary (this repo
+/// has a documented TAI/J2000-vs-Unix time-unit trap).
+fn created_at_unix_seconds(tai_j2000_micros: u64) -> Option<u64> {
+    if tai_j2000_micros == 0 {
+        return None;
+    }
+    riot_core::willow::unix_seconds_from_tai_j2000_micros(tai_j2000_micros).ok()
+}
+
 fn projected_post_view(
     post: &riot_core::newswire::ProjectedPost,
     render: &impl Fn(&[u8; SUBSPACE_ID_BYTES]) -> NewswireAuthor,
@@ -707,6 +832,7 @@ fn projected_post_view(
         entry_id: hex(&post.entry_id),
         author: render(&post.author_id),
         tai_j2000_micros: post.tai_j2000_micros,
+        created_at_unix_seconds: created_at_unix_seconds(post.tai_j2000_micros),
         headline: post.headline.clone(),
         body: post.body.clone(),
         language: post.language.clone(),
@@ -728,6 +854,7 @@ fn projected_post_view(
             .map(|tally| NewswireReactionTally {
                 kind: reaction_kind_name(tally.kind).to_string(),
                 count: tally.count,
+                reacted_by_me: tally.reacted_by_viewer,
             })
             .collect(),
     }
@@ -954,4 +1081,252 @@ fn map_core_error_inner(error: riot_core::session::SessionError) -> MobileError 
     // SessionError family as sync; log the precise variant before collapse.
     warn!(target: "riot::newswire", error = ?error, "SessionError (newswire import) collapsed to MobileError::Internal");
     MobileError::Internal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riot_core::sync::MAX_SYNC_IDS;
+    use riot_core::willow::{ClockSnapshot, EntryId, SignedWillowEntry};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ProfileSnapshot {
+        receipt_count: usize,
+        generation: u64,
+        live_ids: Vec<EntryId>,
+        inventory: Vec<SignedWillowEntry>,
+    }
+
+    fn space_input(name: &str) -> NewswireSpaceInput {
+        NewswireSpaceInput {
+            name: name.into(),
+            summary: "Reaction preflight fixture.".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+        }
+    }
+
+    fn post_input(descriptor_entry_id: &str) -> NewswirePostInput {
+        NewswirePostInput {
+            space_descriptor_entry_id: descriptor_entry_id.into(),
+            headline: "Reaction preflight report".into(),
+            body: "Body of the report.".into(),
+            language: "en".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        }
+    }
+
+    fn reaction_fixture() -> (
+        std::sync::Arc<MobileProfile>,
+        NewswireSignedRecord,
+        NewswireSignedRecord,
+    ) {
+        let profile = crate::mobile_state::open_local_profile().expect("profile");
+        let descriptor = profile
+            .create_newswire_space(space_input("Reaction preflight"))
+            .expect("descriptor");
+        let post = profile
+            .create_newswire_post(post_input(&descriptor.entry_id))
+            .expect("post");
+        (profile, descriptor, post)
+    }
+
+    fn snapshot(profile: &MobileProfile) -> ProfileSnapshot {
+        with_active(&profile.inner, |profile| {
+            let mut live_ids = profile.store.live_entry_ids().expect("live ids");
+            live_ids.sort_unstable();
+            Ok(ProfileSnapshot {
+                receipt_count: profile.store.receipt_count().expect("receipt count"),
+                generation: profile.store.generation().expect("generation"),
+                live_ids,
+                inventory: profile.sync_inventory.clone(),
+            })
+        })
+        .expect("active profile")
+    }
+
+    #[test]
+    fn reaction_preflight_capacity_failure_leaves_store_and_inventory_unchanged() {
+        let (profile, descriptor, post) = reaction_fixture();
+        let app_id = "ab".repeat(32);
+        for index in 0..(MAX_SYNC_IDS - 2) {
+            crate::mobile_state::app_data_put(
+                &profile.inner,
+                app_id.clone(),
+                format!("reaction-preflight/{index}"),
+                vec![index as u8],
+            )
+            .expect("fill inventory");
+        }
+        let before = snapshot(&profile);
+        assert_eq!(before.inventory.len(), MAX_SYNC_IDS);
+
+        assert!(matches!(
+            profile.toggle_newswire_reaction(
+                descriptor.entry_id,
+                post.entry_id,
+                "support".into(),
+                true,
+            ),
+            Err(MobileError::SessionLimit)
+        ));
+
+        assert_eq!(snapshot(&profile), before);
+    }
+
+    #[test]
+    fn reaction_preflight_incomplete_inventory_leaves_store_and_inventory_unchanged() {
+        let (profile, descriptor, post) = reaction_fixture();
+        with_active(&profile.inner, |profile| {
+            profile.sync_inventory.pop().expect("fixture inventory");
+            Ok(())
+        })
+        .expect("desynchronize inventory");
+        let before = snapshot(&profile);
+
+        assert!(matches!(
+            profile.toggle_newswire_reaction(
+                descriptor.entry_id,
+                post.entry_id,
+                "support".into(),
+                true,
+            ),
+            Err(MobileError::Internal)
+        ));
+
+        assert_eq!(snapshot(&profile), before);
+    }
+
+    #[test]
+    fn reaction_preflight_rejects_not_live_effect_before_mutation() {
+        let (profile, _, _) = reaction_fixture();
+        let before = snapshot(&profile);
+
+        assert!(matches!(
+            validate_newswire_preflight(
+                Vec::new(),
+                Vec::new(),
+                &[(
+                    [0x11; 32],
+                    riot_core::import::join::JoinEffect::NotLive {
+                        dominating_entry_ids: vec![[0x22; 32]],
+                    },
+                )],
+            ),
+            Err(MobileError::InvalidInput)
+        ));
+
+        assert_eq!(snapshot(&profile), before);
+    }
+
+    #[test]
+    fn reaction_preflight_exact_duplicate_creates_no_receipt_or_inventory_change() {
+        let (profile, descriptor, post) = reaction_fixture();
+        let descriptor_id = parse_entry_id(&descriptor.entry_id).expect("descriptor id");
+        let parent_id = parse_entry_id(&post.entry_id).expect("post id");
+        let signed = with_active(&profile.inner, |profile| {
+            let verified =
+                riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id)
+                    .map_err(map_newswire_store_error)?;
+            let snapshot = riot_core::willow::ClockSnapshot {
+                unix_seconds: 1_800_000_000,
+                tai_j2000_micros: 600_000,
+                uncertainty_seconds: 0,
+            };
+            let signed = riot_core::newswire::create_signed_news_reaction_at(
+                &profile.author,
+                &verified,
+                snapshot,
+                NewsReactionV1 {
+                    space_descriptor_entry_id: descriptor_id,
+                    parent_entry_id: parent_id,
+                    kind: riot_core::newswire::ReactionKind::Support,
+                    active: true,
+                },
+            )
+            .map_err(map_newswire_error)?;
+            import_signed_newswire(profile, &signed)?;
+            Ok(signed)
+        })
+        .expect("first import");
+        let before = snapshot(&profile);
+
+        with_active(&profile.inner, |profile| {
+            import_signed_newswire(profile, &signed)?;
+            Ok(())
+        })
+        .expect("idempotent duplicate");
+
+        assert_eq!(snapshot(&profile), before);
+    }
+
+    #[test]
+    fn reaction_preflight_rapid_toggle_uses_a_strict_timestamp_floor() {
+        let (profile, descriptor, post) = reaction_fixture();
+        let descriptor_id = parse_entry_id(&descriptor.entry_id).expect("descriptor id");
+        let parent_id = parse_entry_id(&post.entry_id).expect("post id");
+        let frozen = ClockSnapshot {
+            unix_seconds: 1_800_000_000,
+            tai_j2000_micros: 500_000,
+            uncertainty_seconds: 0,
+        };
+
+        let timestamps = with_active(&profile.inner, |profile| {
+            let verified =
+                riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id)
+                    .map_err(map_newswire_store_error)?;
+            let mut timestamps = Vec::new();
+            for active in [true, false, true] {
+                let snapshot = next_reaction_snapshot_from(
+                    profile,
+                    descriptor_id,
+                    parent_id,
+                    riot_core::newswire::ReactionKind::Support,
+                    frozen,
+                )?;
+                let signed = riot_core::newswire::create_signed_news_reaction_at(
+                    &profile.author,
+                    &verified,
+                    snapshot,
+                    NewsReactionV1 {
+                        space_descriptor_entry_id: descriptor_id,
+                        parent_entry_id: parent_id,
+                        kind: riot_core::newswire::ReactionKind::Support,
+                        active,
+                    },
+                )
+                .map_err(map_newswire_error)?;
+                timestamps.push(snapshot.tai_j2000_micros);
+                import_signed_newswire(profile, &signed)?;
+            }
+            Ok(timestamps)
+        })
+        .expect("rapid toggles");
+
+        assert!(timestamps[0] < timestamps[1]);
+        assert!(timestamps[1] < timestamps[2]);
+        let projection = profile
+            .project_newswire_space(descriptor.entry_id)
+            .expect("projection");
+        let projected = projection
+            .open_wire
+            .iter()
+            .find(|candidate| candidate.entry_id == post.entry_id)
+            .expect("post");
+        assert_eq!(
+            projected.reactions,
+            vec![NewswireReactionTally {
+                kind: "support".into(),
+                count: 1,
+                reacted_by_me: true,
+            }]
+        );
+    }
 }

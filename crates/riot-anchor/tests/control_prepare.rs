@@ -88,6 +88,7 @@ fn d16(seed: u8) -> [u8; 16] {
 }
 
 /// A test operator signer producing real Ed25519 signatures.
+#[derive(Clone)]
 struct TestSigner(SigningKey);
 impl OperatorSigner for TestSigner {
     fn sign(&self, preimage: &[u8]) -> [u8; 64] {
@@ -144,6 +145,7 @@ impl AdmissionPolicy for SpyPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         self.calls.borrow_mut().push(Stage::Authorize);
         match self.authorize_refusal.borrow().clone() {
@@ -446,6 +448,42 @@ fn malformed_frame_is_protocol_failure_not_refusal() {
         ControlHandling::ProtocolFailure(ProtocolFailure::Malformed)
     );
     assert!(policy.calls().is_empty(), "decode precedes every check");
+}
+
+// ---------------------------------------------------------------------------
+// The prepared operation persists the exact root-signed ticket envelope — the
+// composite Commit's ONLY ticket source.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prepare_host_persists_the_ticket_envelope() {
+    let op = sk(1);
+    let svc = service(&op, SpyPolicy::new(COMMUNITY_ROOT));
+    let mut repo = AnchorRepository::open_in_memory().unwrap();
+    let body = prepare_body(30, None);
+    let expected_ticket = body
+        .root_signed_ticket_core
+        .encode_canonical()
+        .expect("encode ticket envelope");
+    let mut entropy = entropy_from(0x30);
+    let success = expect_prepare_success(
+        &svc.handle(
+            &mut repo,
+            &prepare_frame(d16(0x21), body),
+            1000,
+            &mut entropy,
+        )
+        .unwrap(),
+    );
+    let stored = repo
+        .load_operation(&success.operation_id)
+        .unwrap()
+        .expect("operation row");
+    assert_eq!(
+        stored.ticket_envelope_bytes,
+        Some(expected_ticket),
+        "PrepareHost must persist the byte-identical admitted ticket envelope"
+    );
 }
 
 // ---------------------------------------------------------------------------

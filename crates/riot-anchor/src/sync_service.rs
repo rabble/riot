@@ -22,9 +22,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use riot_anchor_protocol::authority::{
+    admit_public_site_ticket, AuthorityError, TicketFloor, TicketReason,
+};
 use riot_anchor_protocol::codec::decode_canonical;
 use riot_anchor_protocol::control::{
-    ControlOutcome, ControlResponseV1, ControlSuccess, PrepareSuccessV1, MAX_CONTROL_FRAME_BYTES,
+    ControlOutcome, ControlResponseV1, ControlSuccess, PrepareSuccessV1, TransportMode,
+    MAX_CONTROL_FRAME_BYTES,
+};
+use riot_anchor_protocol::records::{
+    PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2, TransportFloor, MAX_TICKET_CORE_BYTES,
 };
 use riot_anchor_protocol::sync2::{
     compute_snapshot_digest, AdmissionSubject, OpenNamespace, OpenedNamespace, PhaseParty,
@@ -32,11 +39,14 @@ use riot_anchor_protocol::sync2::{
     Sync2Snapshot,
 };
 
+use riot_core::site::{
+    decode_site_manifest, ClassifiedMember, MemberClassification, SiteRule, ValidatedManifest,
+};
 use riot_core::willow::{
     decode_capability_canonic, decode_entry_canonic, entry_id as canonical_entry_id, verify_entry,
     william3_digest, AuthorisationToken,
 };
-use willow25::entry::{Entrylike, SubspaceSignature};
+use willow25::entry::{Entrylike, NamespaceId, SubspaceSignature};
 use willow25::groupings::{Coordinatelike, Keylike, Namespaced};
 
 use crate::repository::{AnchorRepository, OperationStatus, StagedEntry};
@@ -421,6 +431,210 @@ impl AnchorSyncRepository {
             now,
         }
     }
+
+    /// Route a `ReadCommitted` open — the public follow/read path. **SECURITY
+    /// SURFACE.** No control-plane operation is required; authority is the
+    /// root-signed ticket alone, admitted through the canonical
+    /// [`admit_public_site_ticket`] gate WITH this anchor's currently committed
+    /// manifest attached (gate step 7 is the only legal ticket↔manifest
+    /// coordinate, digest, and transport equality check — mirror of
+    /// `hosting.rs::TicketManifestAuthority`). On success the anchor exposes a
+    /// one-way committed snapshot: a single sender direction, never a stage.
+    fn open_read_committed(
+        &self,
+        request: &OpenNamespace,
+    ) -> Result<OpenedNamespace<Self>, Sync2Refusal> {
+        // 1. Bounded decode of the root-signed ticket core envelope (the same
+        //    bound as the hosting.rs / listing.rs sibling call sites).
+        let envelope = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
+            &request.ticket_core_bytes,
+            MAX_TICKET_CORE_BYTES + 128,
+        )
+        .map_err(|_| Sync2Refusal::InvalidTicket {
+            reason: TicketReason::Structure,
+        })?;
+        let core = envelope.core.clone();
+
+        // 2. Durable inputs: the committed manifest for the ticket's community
+        //    (`community_id == o_namespace_id`; in any admitted pair the gate
+        //    also forces `o_namespace_id == root_id == manifest.root`) and the
+        //    durable per-root transport-epoch rollback floor. A store fault
+        //    fails CLOSED as an authority admission failure.
+        let store_fault = |_| Sync2Refusal::AdmissionFailed {
+            subject: AdmissionSubject::Authority,
+        };
+        let (committed, highest_transport_epoch) = {
+            let mut repo = self.repo.borrow_mut();
+            let tx = repo.begin().map_err(store_fault)?;
+            let committed = tx
+                .committed_manifest(&core.o_namespace_id)
+                .map_err(store_fault)?;
+            let floor = tx
+                .highest_ticket_transport_epoch(&core.root_id)
+                .map_err(store_fault)?;
+            // The read-only transaction rolls back on drop.
+            (committed, floor)
+        };
+
+        // 3. "Nothing committed for this community" refuses before the gate:
+        //    there is no manifest to be equal to and no snapshot to serve.
+        let (_generation, stored_digest, stored_bytes) = match committed {
+            Some(manifest) => manifest,
+            None => {
+                return Err(Sync2Refusal::ManifestMismatch {
+                    expected_digest: core.manifest_digest,
+                    observed_digest: [0u8; 32],
+                })
+            }
+        };
+
+        // 4. Reconstruct the committed [`ValidatedManifest`] from the stored
+        //    canonical payload (persisted at CommitHost AFTER full owner-signed
+        //    validation). A stored payload that no longer decodes is a corrupt
+        //    committed manifest — refuse.
+        let validated =
+            committed_validated_manifest(&stored_bytes).ok_or(Sync2Refusal::ManifestMismatch {
+                expected_digest: core.manifest_digest,
+                observed_digest: stored_digest,
+            })?;
+
+        // 5. The canonical gate WITH the committed manifest attached — root
+        //    signature, sync version, transport floor, lifetime cap, inclusive
+        //    expiry, epoch rollback, and ticket↔manifest coordinate/digest/
+        //    transport equality, fail-closed and in order. MIRROR of the
+        //    `TicketManifestAuthority::resolve_manifest` sibling call.
+        let admitted = admit_public_site_ticket(
+            &envelope,
+            Some(&validated),
+            &TransportFloor::RequireNone,
+            &TicketFloor {
+                root_id: core.root_id,
+                highest_transport_epoch,
+            },
+            self.now,
+        )
+        .map_err(|error| {
+            map_read_committed_authority_error(&core, stored_digest, self.now, error)
+        })?;
+
+        // 6. Exact namespace membership: the requested namespace must be one of
+        //    the ADMITTED ticket's ordered O/C/W ids.
+        let admitted_core = &admitted.core;
+        let members = [
+            admitted_core.o_namespace_id,
+            admitted_core.c_namespace_id,
+            admitted_core.w_namespace_id,
+        ];
+        if !members.contains(&request.namespace_id) {
+            return Err(Sync2Refusal::NamespaceNotMember {
+                namespace_id: request.namespace_id,
+            });
+        }
+
+        // 7. The one-way committed snapshot: a single sender direction on the
+        //    anchor (the FSM's read-only committed mode) — never a receiver.
+        let sender = {
+            let repo = self.repo.borrow();
+            AnchorSnapshot::from_committed(&repo, &request.namespace_id)
+        };
+        Ok(OpenedNamespace {
+            namespace_id: request.namespace_id,
+            mode: Sync2ModeTag::ReadCommitted,
+            parties: vec![(Sync2Phase::AnchorToClient, PhaseParty::Sender(sender))],
+            stale_source: None,
+        })
+    }
+}
+
+/// Rebuild a [`ValidatedManifest`] from the committed canonical manifest payload.
+///
+/// The stored bytes were fully validated (owner signature, zero-delegation
+/// keystone, payload↔entry binding) by `validate_site_manifest` inside the
+/// composite CommitHost before persistence — this reconstruction only re-decodes
+/// the canonical payload and re-derives each member's intrinsic marker-bit
+/// classification (riot-core invariant 1: the declared rule class must agree
+/// with `NamespaceId::is_owned()` / `is_communal()`), exactly as riot-core's
+/// private `classify_member` does. The classification is carried for type
+/// fidelity; the canonical gate consumes only the manifest coordinates.
+fn committed_validated_manifest(payload_bytes: &[u8]) -> Option<ValidatedManifest> {
+    let manifest = decode_site_manifest(payload_bytes).ok()?;
+    let members = manifest
+        .members
+        .iter()
+        .cloned()
+        .map(|member| {
+            let namespace = NamespaceId::from_bytes(&member.ns);
+            let agrees = match member.rule {
+                SiteRule::OwnedWrite => namespace.is_owned(),
+                SiteRule::CommunalOpen => namespace.is_communal(),
+                SiteRule::Unknown(_) => false,
+            };
+            ClassifiedMember {
+                classification: if agrees {
+                    MemberClassification::Verified
+                } else {
+                    MemberClassification::Unverified
+                },
+                member,
+            }
+        })
+        .collect();
+    Some(ValidatedManifest { manifest, members })
+}
+
+/// Map a canonical [`AuthorityError`] onto the closed `sync/2` refusal
+/// vocabulary (`sync2.rs` — no new variants). The distinguished cases carry
+/// actionable detail; every other authority fault — including epoch rollback,
+/// which the closed vocabulary carries no detail row for — collapses fail-closed
+/// into the generic `invalid_ticket` refusal, mirroring the control plane's
+/// collapse into `invalid_ticket_authority`.
+fn map_read_committed_authority_error(
+    core: &PublicSiteTicketV2Core,
+    stored_manifest_digest: [u8; 32],
+    observed_at: u64,
+    error: AuthorityError,
+) -> Sync2Refusal {
+    match error {
+        AuthorityError::InvalidTicket(reason) => Sync2Refusal::InvalidTicket { reason },
+        AuthorityError::UnsupportedVersion => Sync2Refusal::UnsupportedVersion {
+            supported_versions: vec![2],
+        },
+        AuthorityError::UnsupportedTransport | AuthorityError::ManifestTransportMismatch => {
+            Sync2Refusal::TransportMismatch {
+                required_mode: TransportMode::RequireNone,
+                observed_mode: ticket_observed_transport_mode(core),
+            }
+        }
+        AuthorityError::ExpiredTicket => Sync2Refusal::ExpiredTicket {
+            expires_at: core.expiry_unix_seconds,
+            observed_at,
+        },
+        AuthorityError::ManifestMismatch => Sync2Refusal::ManifestMismatch {
+            expected_digest: core.manifest_digest,
+            observed_digest: stored_manifest_digest,
+        },
+        // EpochRollback, MalformedRecord, and the listing-only variants: no
+        // closed sync/2 detail row exists — fail closed as invalid_ticket.
+        _ => Sync2Refusal::InvalidTicket {
+            reason: TicketReason::Structure,
+        },
+    }
+}
+
+/// The transport mode a refused ticket OBSERVABLY demanded, for the
+/// `transport_mismatch` detail row: the ticket's own floor if non-`require_none`,
+/// otherwise its claimed manifest requirement (mirror of `daemon.rs`'s
+/// `ticket_required_transport_mode`).
+fn ticket_observed_transport_mode(core: &PublicSiteTicketV2Core) -> TransportMode {
+    let floor = if core.transport_floor != TransportFloor::RequireNone {
+        core.transport_floor
+    } else {
+        core.manifest_required_transport
+    };
+    match floor {
+        TransportFloor::RequireNone => TransportMode::RequireNone,
+        TransportFloor::RequireArti => TransportMode::RequireArti,
+    }
 }
 
 impl Sync2Repository for AnchorSyncRepository {
@@ -436,7 +650,8 @@ impl Sync2Repository for AnchorSyncRepository {
                 operation_id,
                 namespace_token,
             } => (*operation_id, *namespace_token),
-            Sync2Mode::ReplicaIntoStaged { .. } | Sync2Mode::ReadCommitted => {
+            Sync2Mode::ReadCommitted => return self.open_read_committed(request),
+            Sync2Mode::ReplicaIntoStaged { .. } => {
                 return Err(Sync2Refusal::InvalidMode {
                     observed_mode: request.mode.tag(),
                 });

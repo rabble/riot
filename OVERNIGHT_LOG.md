@@ -1,3 +1,65 @@
+# Compact Tool Breadcrumb — Morning Summary (2026-07-22)
+
+## Done and tested
+
+- Implemented and committed the compact macOS `community › app › page`
+  breadcrumb. Community opens the chooser, app returns the running mini-app to
+  its root, page names follow verified WebKit titles, and constrained widths
+  switch the complete row to `🏘 › 🧰 › 📄` without mixed modes.
+- Removed the oversized Close row, fixed sidebar and chooser escape paths, and
+  made app teardown synchronous before route/community transitions. Reopening
+  or replacing an app always receives a fresh WebView identity.
+- Updated Wiki to publish `Page — Wiki` titles, handle the host root event, and
+  preserve editing-conflict state. Repacked the Wiki artifact and refreshed the
+  deterministic Riverside demo fixture for the resulting app ID.
+- Preserved iPhone NavigationStack/tab behavior; both iOS simulator and device
+  builds pass, as do the complete shared macOS Swift tests.
+- Verification passed: 206 Playwright mini-app tests, strict Rust Clippy,
+  formatting, workspace check, the full Rust workspace test suite, shared
+  macOS Swift tests, and iOS simulator/device builds. The authoritative
+  instrumented test corpus also passed; Rust line coverage measured **94.52%
+  (18,797/19,887)**.
+
+## Open or blocked
+
+- The authoritative coverage gate remains red because 94.52% is below the 97%
+  floor in `.coverage-thresholds.json`. The breadcrumb changes are Swift and
+  bundled web code, so closing this repository-wide Rust gap is separate work;
+  the floor and exclusions were not changed.
+- Direct RiotKit execution on an iOS simulator compiled successfully but the
+  Xcode test runner never launched the test process; the same shared suite is
+  green on macOS and the full iOS simulator build is green.
+- Native screenshot capture is unavailable in this execution environment
+  (`screencapture` cannot create an image from the display). Responsive layout,
+  accessibility wording, and both breadcrumb presentations are covered by
+  deterministic tests, but a final human visual/VoiceOver pass remains useful.
+- Existing non-fatal warnings remain: one Swift actor-isolation call in
+  `SyncCoordinator`, and native Rust archives built for a newer Apple platform
+  than the app deployment target. Neither warning was introduced or expanded
+  as part of the breadcrumb behavior.
+
+## Assumptions to review
+
+- The breadcrumb is macOS-only; iPhone retains its community header,
+  NavigationStack back behavior, and tab state preservation.
+- Selecting a different community while any tool is mounted shows a conservative
+  possible-edit-loss confirmation because native code cannot inspect an app's
+  in-memory draft state.
+- Selecting the current community dismisses the chooser while preserving the
+  same WebView and page.
+
+## Suggested next steps
+
+1. Review the normal and narrow breadcrumb states in a visible macOS session,
+   including VoiceOver labels for all three levels.
+2. Investigate the iOS RiotKit simulator test-runner stall separately if
+   platform-specific execution evidence is required beyond the green shared
+   macOS suite and iOS compile/build gates.
+3. Add focused Rust tests to close the repository-wide 2.48-point coverage gap;
+   do not lower `.coverage-thresholds.json` incidentally for this UX task.
+
+---
+
 # PR #68 Rebase + Compact UX Integration — Morning Summary (2026-07-20)
 
 ## Done and tested
@@ -1048,3 +1110,144 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
 - Open morning question: should the 97% Tarpaulin recovery be re-grounded as a
   dedicated cross-crate task now that current main contains substantially more
   anchor, FFI, and transport code than the Jul-15 measurement?
+
+## 2026-07-22 — Compact community/app/page navigation design
+
+- Created isolated branch `overnight/2026-07-22` from current `origin/main` in
+  the global worktree directory, preserving unrelated local Xcode, test, and
+  screenshot changes in the main checkout.
+- Read and followed the community-first navigation and app-runtime designs,
+  Divine shared context, and the `brainstorming`, `visual-review`,
+  `systematic-debugging`, `test-driven-development`, `using-git-worktrees`,
+  and metaswarm gate skills.
+- Root cause: macOS sidebar route selection changes the selected route without
+  clearing `runningTool`, while the detail pane always renders a non-nil tool.
+  The WebView also has no host-visible nested-page state. The native Close
+  closure itself clears the tool, so replacing only its styling would not fix
+  ordinary sidebar navigation.
+- Wrote `docs/superpowers/specs/2026-07-22-compact-tool-breadcrumb-design.md`.
+  It replaces the large Close row with `community › app › page`, makes the
+  community crumb open the existing chooser, makes the app crumb reload the
+  verified entry point, and falls back to `🏘 › 🧰 › 📄` through
+  `ViewThatFits` while retaining full accessibility labels.
+- Assumption: this change is macOS-specific because iPhone already retains the
+  community header and a NavigationStack back path; adding the same row there
+  would duplicate chrome. The shared WebView location plumbing remains safe to
+  reuse later.
+- Rejected alternative: an icon-only Close control would save space but still
+  hide the community/app/page hierarchy and would leave sidebar routing broken.
+- Baseline verification: `cargo build --workspace --all-features` and
+  `cargo test --workspace --all-features` passed before implementation.
+- No blocked work or document conflict at this stage. The design and plan gates
+  remain required before source implementation.
+
+## 2026-07-22 — Compact breadcrumb design-gate review
+
+- Ran the metaswarm design-review gate with isolated Product, Architect,
+  Designer, Security, and CTO reviews. Agent-capacity constraints required
+  sequential batches; reviewers were fresh, read-only, and never saw one
+  another's findings.
+- Review-driven corrections included: a stable Wiki index above 640 points;
+  exact `window` event dispatch; honest root-event failure recovery; macOS-only
+  route teardown; a chooser-level possible-edit-loss confirmation; chooser
+  Nearby teardown; raw and parsed title bounds; NFC plus `Cc`/`Cf`/`Zl`/`Zp`
+  rejection; weak KVO teardown; editing-conflict preservation; pure presentation
+  test seams; macOS test-target registration; and the authoritative coverage
+  gate.
+- The first partial review batch was not counted as an iteration because only
+  Product and Architect ran. Three later complete five-role iterations were
+  run, satisfying the configured maximum.
+- Final complete iteration on `7ccb7ea`: Product APPROVED, Architect APPROVED,
+  Designer APPROVED, Security APPROVED, CTO NEEDS_REVISION. CTO's single blocker
+  was that the spec described trimming before forbidden-scalar rejection, which
+  could remove a boundary newline/U+2028/U+2029 before validation.
+- Corrected that exact issue in `f9d3d58`: the raw bounded title is now scanned
+  for `Cc`/`Cf`/`Zl`/`Zp` before NFC normalization or whitespace trimming, with
+  beginning/middle/end tests specified.
+- Assumption rejected: treating the small final clarification as an implicit
+  gate approval. `AGENTS.md` requires all five approvals, and the gate skill
+  requires human escalation after three complete failed iterations.
+- Skipped implementation and plan drafting because proceeding would violate the
+  mandatory gate. Open question: approve an explicit process override for the
+  corrected design, or cancel the feature.
+
+## 2026-07-22 — Compact breadcrumb implementation
+
+- Docs and skills used: all repository Markdown and linked Divine context
+  previously inventoried in this log; the approved breadcrumb design and
+  adversarially reviewed implementation plan; Metaswarm start, design review,
+  plan review, orchestrated execution, and visual review; Superpowers
+  brainstorming, systematic debugging, TDD, worktree isolation, plan execution,
+  and verification-before-completion.
+- Implemented the macOS host breadcrumb in `AppRuntimeView`: full
+  `community › app › page` labels use one 36-point native row, while
+  `ViewThatFits` switches the whole hierarchy to `🏘 › 🧰 › 📄` when full names
+  do not fit. Community and app levels are actionable; page is a location label.
+  Accessibility labels always retain the full names.
+- Added bounded, NFC-normalized mini-app title parsing. Raw WebKit titles reject
+  control/format/line/paragraph separator scalars before trimming, require the
+  exact ` — app` suffix, cap raw and displayed input, coalesce duplicate KVO
+  updates, and replace any literal breadcrumb separator in trusted host labels.
+- Replaced the large macOS Close row. Community opens the existing chooser;
+  app dispatches the exact `riot:navigate-root` event. Sidebar changes, chooser
+  switches, Nearby, Create, Join, back navigation, closing, and app replacement
+  synchronously tear down the active runtime before mutating the next route.
+  A fresh UUID prevents SwiftUI from reusing a torn-down WebView, including when
+  the same app is immediately reopened.
+- The chooser preserves the mounted WebView when the current community is
+  selected. Switching to another community while a tool is mounted requires a
+  possible-edit-loss confirmation with Stay and a destructive transition.
+  Assumption: native code cannot reliably inspect arbitrary mini-app draft
+  state, so confirmation is conservative rather than conditional on known Wiki
+  edits. Rejected alternative: silently destroy the app or retain a hidden
+  execution session across communities.
+- Updated Wiki to set `Wiki` at root and `Page — Wiki` on nested pages, consume
+  the host root event, keep an explicit index state on wide layouts, and retain
+  draft/selection/title on edit conflicts. Repacked the committed Wiki bundle.
+- TDD evidence: the new browser tests first failed because Wiki still reported
+  only `Wiki`; after implementation the focused 2/2 tests and complete 206-test
+  Playwright suite passed. Swift tests cover parsing, spoof resistance,
+  responsive labels, chooser decisions/action ordering, synchronous idempotent
+  teardown, replacement identity, platform route policy, and actual WKWebView
+  title/root behavior.
+- The first full Rust workspace test exposed deterministic demo drift: changing
+  Wiki changed its content-derived app ID, leaving Riverside's trusted starter
+  reference stale. Regenerated only the documented 16,911-byte evidence bundle,
+  then both drift tests, all starter tests, and a fresh full workspace test run
+  passed. Commit: `3e0433b`.
+- Independent review initially found four important edge cases: deleting the
+  selected Wiki page could rebound to another page, iPhone chooser destinations
+  could tear down a mounted tool, the switch warning did not explicitly mention
+  unsaved changes, and the app level was actionable while already at app root.
+  It also requested stronger accessibility hit-target semantics. Added failing
+  regression tests first, fixed each case, and committed the result as
+  `f61e3ba`; the follow-up review returned PASS with no Critical or Important
+  findings.
+- Verification completed successfully after those fixes: `cargo fmt --all -- --check`,
+  `cargo check --workspace --all-features`, strict all-target Clippy, full
+  workspace tests, starter artifact checks, 206 Playwright tests, shared macOS
+  Swift tests, macOS app compile, iOS simulator build, and iOS device build.
+  Commits: `b91ed1c`, `a749002`, `021745d`, and `3e0433b` (plus design/plan
+  commits already recorded).
+- Direct `RiotKit` test execution against an iOS simulator compiled but stalled
+  before Xcode launched a test process; it was terminated after repeated idle
+  checks. This did not block the same shared suite on macOS or either iOS build.
+  Native visual capture was also skipped after `screencapture` reported that no
+  display image could be created; no production data or app state was reset to
+  manufacture a screenshot.
+- Existing warnings recorded, not broadened: `SyncCoordinator` calls a
+  main-actor-inferred static notification method from a nonisolated context,
+  and the local native Rust archives target Apple 26.2 while app deployment is
+  iOS 17/macOS 14. The WebKit navigation delegate near-match warning was fixed
+  in scope with the SDK-correct `@MainActor @Sendable` callback signature so
+  the URL allowlist remains an actual delegate implementation.
+- The first authoritative coverage attempt was stopped after review identified
+  source changes, because measuring a changing source tree would be invalid.
+  The final fresh `scripts/web/coverage.sh` run completed its clean build and
+  full instrumented test corpus without test failures, then correctly exited
+  non-zero: **94.52% (18,797/19,887)** is below the configured **97%** line
+  floor. No threshold, exclusion, dependency, or architecture was changed to
+  hide this repository-wide blocker.
+- Open review question: should the old native archive deployment-target warning
+  be repaired in the build script as a separate task so locally built SQLite
+  objects match the app's minimum Apple OS versions?

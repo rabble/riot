@@ -75,7 +75,7 @@
     .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
     .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
     .sitenav-brand:hover { opacity: .8; }
-    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
     .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
     .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
     .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
@@ -170,7 +170,6 @@
         <a href="/why-riot/">Why Riot</a>
         <a href="/guide/">Using Riot</a>
         <a href="/about/">About</a>
-        <a href="/privacy/">Privacy</a>
         <a href="/open-source/">Open source</a>
         <a href="/community/">Community</a>
         <a href="/releases/" aria-current="page">Get the app</a>
@@ -190,7 +189,7 @@
       <div class="wrap">
         <p class="kicker">Releases · get the app</p>
         <h1>Get Riot.</h1>
-        <p class="lede">Riot is in active development. When builds are cut, macOS and Android packages attach to a GitHub Release and appear here automatically; iOS beta will run through TestFlight. Nothing on this page is a finished, audited product — read the honest status below before you install anything.</p>
+        <p class="lede">Riot is in active development. When builds are cut, macOS and Android packages attach to a GitHub Release and appear here automatically; the iOS beta is open through TestFlight. Nothing on this page is a finished, audited product — read the honest status below before you install anything.</p>
         <div class="actions">
           <a class="btn solid" href="https://github.com/rabble/riot/releases" rel="noopener">Browse releases on GitHub ↗</a>
           <a class="btn" href="/community/">Follow the build</a>
@@ -231,21 +230,21 @@
     <section class="yellow" id="ios">
       <div class="wrap">
         <p class="eyebrow">iOS &amp; TestFlight</p>
-        <h2>iPhone — TestFlight, when it opens.</h2>
-        <p class="section-intro">iOS beta will run through Apple TestFlight. It is not open yet. There is no invite link to share today, and we will not put a fake signup form on this page.</p>
+        <h2>iPhone — the TestFlight beta is open.</h2>
+        <p class="section-intro">iOS runs through Apple TestFlight. This is an early alpha build, not a finished or audited product — expect rough edges and missing pieces. You will need the free TestFlight app from Apple to install it.</p>
         <div class="grid cards-2">
           <article class="card">
-            <span class="status-chip planned">Coming soon</span>
+            <span class="status-chip live">Open now</span>
             <h3>TestFlight beta</h3>
-            <p>When the iOS build is ready for outside testers, a public TestFlight invite link goes here. Until then, the box below is intentionally inert.</p>
+            <p>Join the public alpha and get new builds as they ship. It is an early prototype — read the honest status below before you rely on it for anything.</p>
             <div class="actions">
-              <span class="btn" aria-disabled="true">TestFlight invite — not yet</span>
+              <a class="btn solid" href="https://testflight.apple.com/join/6Wn29vqE" rel="noopener">Join the TestFlight beta ↗</a>
             </div>
           </article>
           <article class="card">
             <span class="label">In the meantime</span>
             <h3>Follow along</h3>
-            <p>Build progress and the TestFlight opening announcement will post through the community channels.</p>
+            <p>Build progress and beta announcements post through the community channels.</p>
             <div class="actions">
               <a class="btn solid" href="/community/">See the community page</a>
               <a class="btn" href="/open-source/">Build from source</a>
@@ -285,7 +284,7 @@
   <footer>
     <div class="footer-inner">
       <p>Riot · a protest.net project · prototype</p>
-      <p class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></p>
     </div>
   </footer>
 </body>

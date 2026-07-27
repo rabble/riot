@@ -63,6 +63,45 @@ test("Wiki primary flow", async ({ page }) => {
   await expect(page.getByText("Meet by the blue gate at 18:00.", { exact: true })).toBeVisible();
 });
 
+test("Wiki publishes breadcrumb titles and handles app-root navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/apps/wiki/?state=seeded");
+  await expect(page).toHaveTitle("Meeting guide — Wiki");
+
+  await page.evaluate(() => window.dispatchEvent(new Event("riot:navigate-root")));
+
+  await expect(page).toHaveTitle("Wiki");
+  await expect(page.locator("#page-index")).toBeVisible();
+  await expect(page.locator('[aria-current="page"]')).toHaveCount(0);
+});
+
+test("Wiki app-root navigation preserves an editing conflict draft", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/apps/wiki/?state=seeded");
+  await page.getByRole("button", { name: "Edit page" }).click();
+  await page.getByLabel("Page text").fill("My exact unsaved draft");
+  await page.evaluate(() => window.__miniappPreview.remoteDelete("pages/meeting-guide"));
+  await expect(page.getByRole("alert")).toContainText("changed or disappeared");
+
+  await page.evaluate(() => window.dispatchEvent(new Event("riot:navigate-root")));
+
+  await expect(page.getByLabel("Page text")).toHaveValue("My exact unsaved draft");
+  await expect(page.getByRole("alert")).toContainText("changed or disappeared");
+  await expect(page).toHaveTitle("Meeting guide — Wiki");
+});
+
+test("Wiki stays at its index when a selected page disappears outside editing", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/apps/wiki/?state=seeded");
+  await expect(page).toHaveTitle("Meeting guide — Wiki");
+
+  await page.evaluate(() => window.__miniappPreview.remoteDelete("pages/meeting-guide"));
+
+  await expect(page).toHaveTitle("Wiki");
+  await expect(page.locator("#page-index")).toBeVisible();
+  await expect(page.locator('[aria-current="page"]')).toHaveCount(0);
+});
+
 test("Photo Wall primary flow", async ({ page }) => {
   await page.goto("/apps/photo-wall/?state=seeded");
   await page.getByLabel("Caption").fill("Fresh paint on the library shelves");

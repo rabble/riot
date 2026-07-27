@@ -10,6 +10,7 @@ members = [
     "crates/riot-conformance",
     "crates/xtask",
 ]
+exclude = ["vendor/tor-dirmgr-0.44.0"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -47,7 +48,7 @@ chacha20poly1305 = { version = "=0.10.1", default-features = false, features = [
 data-encoding = "=2.11.0"
 # Physical database for the multi-space store. Bundling fixes SQLite and JSON
 # behavior across iOS, Android, and macOS instead of inheriting each OS build.
-rusqlite = { version = "=0.39.0", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
+rusqlite = { version = "=0.40.1", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
 # Structured logging for the sync engine, newswire reply path, and FFI.
 # Already resolved transitively (iroh/tokio pull tracing); pinned here as
 # direct deps so riot-core and riot-ffi can emit spans without a version bump.
@@ -62,7 +63,21 @@ tracing-test = { version = "=0.2.6", features = ["no-env-filter"] }
 # Apple unified-logging Layer; native-only (cfg-gated in riot-ffi).
 tracing-oslog = "=0.3.0"
 
+[patch.crates-io]
+# Arti 0.44 caps rusqlite below 0.40 even though tor-dirmgr's used API remains
+# compatible with 0.40.1. Keep Riot's pinned SQLite 3.53.2 engine by carrying
+# the upstream crate with only that dependency bound widened; see RIOT_PATCH.md.
+tor-dirmgr = { path = "vendor/tor-dirmgr-0.44.0" }
+
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.
 [profile.release]
 panic = "unwind"
+
+# Dev/test builds carry only line tables, not full DWARF. Backtraces still show
+# file:line; debuggers lose variable inspection. In exchange every dev + test +
+# bench compile links less debug info and writes far less to target/ (which had
+# grown to 24 GB, ~5.7 GB of it incremental/debug state). `test` and `bench`
+# inherit `dev`, so this one profile covers the whole non-release graph.
+[profile.dev]
+debug = "line-tables-only"

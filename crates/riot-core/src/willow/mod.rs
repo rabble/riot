@@ -24,7 +24,10 @@ pub use willow25::authorisation::AuthorisationToken;
 pub use willow25::entry::{Entry, NamespaceId, SubspaceId};
 pub use willow25::paths::Path;
 
-pub use clock::{system_snapshot, tai_j2000_micros_from_unix_seconds, ClockSnapshot};
+pub use clock::{
+    system_snapshot, tai_j2000_micros_from_unix_seconds, unix_seconds_from_tai_j2000_micros,
+    ClockSnapshot,
+};
 pub use digest::{
     bundle_digest, entry_id, evidence_digest, object_digest, william3_digest, BundleDigest,
     EntryId, EvidenceDigest, ObjectDigest,
@@ -184,7 +187,7 @@ pub fn decode_capability_canonic(bytes: &[u8]) -> Result<WriteCapability, Willow
 
 /// Canonical decode that also rejects trailing bytes: the value must
 /// consume the producer exactly.
-fn decode_canonic_exact<T>(bytes: &[u8]) -> Result<T, WillowError>
+pub(crate) fn decode_canonic_exact<T>(bytes: &[u8]) -> Result<T, WillowError>
 where
     T: DecodableCanonic,
 {

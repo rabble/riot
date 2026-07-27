@@ -1,6 +1,207 @@
 import SwiftUI
 import WebKit
 
+/// Parses the deliberately small title contract shared by native chrome and a
+/// mounted app: `Page — App`. App-controlled text is display-only and bounded
+/// before normalization so it can never become a navigation authority or an
+/// unbounded allocation in the host.
+enum AppBreadcrumbTitle {
+    static func page(from rawTitle: String?, appName: String) -> String? {
+        guard let rawTitle, rawTitle.utf16.count <= 512 else { return nil }
+        guard rawTitle.unicodeScalars.allSatisfy({ scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                return false
+            default:
+                return true
+            }
+        }) else { return nil }
+
+        let normalized = rawTitle.precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAppName = appName.precomposedStringWithCanonicalMapping
+        let suffix = " — \(normalizedAppName)"
+        guard normalized.hasSuffix(suffix) else { return nil }
+        let page = String(normalized.dropLast(suffix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !page.isEmpty, page.count <= 120, !page.contains("›") else { return nil }
+        return page
+    }
+}
+
+/// The semantic levels used by both full-text and compact breadcrumb variants.
+struct AppBreadcrumbLabels: Equatable {
+    let community: String
+    let app: String
+    let page: String?
+
+    init(community: String, app: String, page: String?) {
+        self.community = Self.safeLevel(community)
+        self.app = Self.safeLevel(app)
+        self.page = page.map(Self.safeLevel)
+    }
+
+    var full: [String] { [community, app, page].compactMap { $0 } }
+    var compact: [String] { page == nil ? ["🏘", "🧰"] : ["🏘", "🧰", "📄"] }
+    var isAppRootActionAvailable: Bool { page != nil }
+    var communityAccessibilityLabel: String {
+        "Choose community, current community: \(community)"
+    }
+    var appAccessibilityLabel: String {
+        isAppRootActionAvailable ? "Return to \(app) home" : app
+    }
+    var pageAccessibilityLabel: String? {
+        page.map { "Current page: \($0)" }
+    }
+
+    private static func safeLevel(_ value: String) -> String {
+        value.replacingOccurrences(of: "›", with: "·")
+    }
+}
+
+/// Synchronous control plane for one mounted WebView. Shell transitions call
+/// `tearDownNow()` before changing community state; the breadcrumb uses the
+/// same mount-scoped handle to ask the page to return to its own root.
+@MainActor
+public final class AppRuntimeTeardownHandle {
+    private var tearDownAction: (() -> Void)?
+    private var navigateRootAction: (() -> Void)?
+
+    public init() {}
+
+    func install(tearDown: @escaping () -> Void, navigateRoot: @escaping () -> Void) {
+        tearDownAction = tearDown
+        navigateRootAction = navigateRoot
+    }
+
+    func remove() {
+        tearDownAction = nil
+        navigateRootAction = nil
+    }
+
+    public func tearDownNow() {
+        let action = tearDownAction
+        remove()
+        action?()
+    }
+
+    func navigateToRoot() {
+        navigateRootAction?()
+    }
+}
+
+#if os(macOS)
+/// Compact native location chrome for a mounted tool. The full hierarchy is
+/// preferred as one indivisible candidate; when it does not fit, every level
+/// switches to an emoji together so the hierarchy never becomes a mixture of
+/// clipped and unexplained labels.
+private struct AppBreadcrumbView: View {
+    let labels: AppBreadcrumbLabels
+    let onCommunity: () -> Void
+    let onAppRoot: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(compact: false)
+                .fixedSize(horizontal: true, vertical: false)
+            row(compact: true)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .leading)
+        .padding(.horizontal, 12)
+        .background(RiotTheme.paper2(for: colorScheme))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func row(compact: Bool) -> some View {
+        HStack(spacing: 7) {
+            crumbButton(
+                compact ? "🏘" : labels.community,
+                accessibilityLabel: labels.communityAccessibilityLabel,
+                help: labels.community,
+                identifier: "breadcrumb-community",
+                action: onCommunity
+            )
+            separator
+            if labels.isAppRootActionAvailable {
+                crumbButton(
+                    compact ? "🧰" : labels.app,
+                    accessibilityLabel: labels.appAccessibilityLabel,
+                    help: labels.app,
+                    identifier: "breadcrumb-app",
+                    action: onAppRoot
+                )
+            } else {
+                currentLevel(
+                    compact ? "🧰" : labels.app,
+                    accessibilityLabel: labels.appAccessibilityLabel,
+                    help: labels.app,
+                    identifier: "breadcrumb-app"
+                )
+            }
+            if let page = labels.page {
+                separator
+                currentLevel(
+                    compact ? "📄" : page,
+                    accessibilityLabel: labels.pageAccessibilityLabel ?? page,
+                    help: page,
+                    identifier: "breadcrumb-page"
+                )
+            }
+        }
+        .font(.riot(.mono, size: 12, relativeTo: .caption))
+        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+    }
+
+    private func crumbButton(
+        _ title: String,
+        accessibilityLabel: String,
+        help: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .frame(minHeight: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier(identifier)
+        .help(help)
+    }
+
+    private func currentLevel(
+        _ title: String,
+        accessibilityLabel: String,
+        help: String,
+        identifier: String
+    ) -> some View {
+        Text(title)
+            .lineLimit(1)
+            .fontWeight(.semibold)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityIdentifier(identifier)
+            .accessibilityAddTraits(.isHeader)
+            .help(help)
+    }
+
+    private var separator: some View {
+        Text("›")
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            .accessibilityHidden(true)
+    }
+}
+#endif
+
 /// The trust-gated inputs a runtime host needs to mount one app in one space.
 ///
 /// HARD CONTRACT (platform review): Rust deliberately does NOT trust-gate
@@ -64,23 +265,39 @@ public struct AppRuntimeView: View {
     private let repository: RiotProfileRepository
     private let appIDHex: String
     private let appName: String
+    private let communityName: String
+    private let onOpenCommunity: () -> Void
+    private let teardownHandle: AppRuntimeTeardownHandle
     private let onClose: () -> Void
 
     public init(
         repository: RiotProfileRepository,
         appIDHex: String,
         appName: String,
+        communityName: String,
+        teardownHandle: AppRuntimeTeardownHandle,
+        onOpenCommunity: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         self.repository = repository
         self.appIDHex = appIDHex
         self.appName = appName
+        self.communityName = communityName
+        self.teardownHandle = teardownHandle
+        self.onOpenCommunity = onOpenCommunity
         self.onClose = onClose
     }
 
     public var body: some View {
         if let launch = AppRuntimeLaunch(repository: repository, appIDHex: appIDHex) {
-            AppHostView(launch: launch, appName: appName, onClose: onClose)
+            AppHostView(
+                launch: launch,
+                appName: appName,
+                communityName: communityName,
+                teardownHandle: teardownHandle,
+                onOpenCommunity: onOpenCommunity,
+                onClose: onClose
+            )
         } else {
             // Trust was revoked between the Tools row rendering "Open" and this
             // view constructing. Per the HARD CONTRACT we must not mount an
@@ -94,11 +311,14 @@ public struct AppRuntimeView: View {
 /// naming who is active in it, and the sandboxed WebView. On iPhone this is a
 /// PUSH under the Tools tab, so the "‹ Tools" back button and app-name title come
 /// from the enclosing `NavigationStack` and the community header + tab bar stay
-/// on screen. On macOS it lives in the split detail, where there is no back
-/// button, so it keeps an explicit Close.
+/// on screen. On macOS it lives in the split detail and uses a compact native
+/// community › app › page breadcrumb for location and escape routes.
 private struct AppHostView: View {
     let launch: AppRuntimeLaunch
     let appName: String
+    let communityName: String
+    let teardownHandle: AppRuntimeTeardownHandle
+    let onOpenCommunity: () -> Void
     let onClose: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
@@ -106,23 +326,28 @@ private struct AppHostView: View {
     /// Who is active in THIS app, read from its own stored rows. Refreshed on
     /// mount, on a store-changed post, and on foreground.
     @State private var digest: AppActivityDigest = .empty
+    @State private var pageTitle: String?
 
     var body: some View {
         VStack(spacing: 0) {
             #if os(macOS)
-            HStack {
-                Text(appName)
-                    .font(.riot(.mono, size: 14, relativeTo: .body))
-                    .textCase(.uppercase)
-                Spacer()
-                Button("Close", action: onClose)
-                    .buttonStyle(.riotSecondary)
-                    .accessibilityIdentifier("app-close")
-            }
-            .padding(12)
+            AppBreadcrumbView(
+                labels: AppBreadcrumbLabels(
+                    community: communityName,
+                    app: appName,
+                    page: pageTitle
+                ),
+                onCommunity: onOpenCommunity,
+                onAppRoot: { teardownHandle.navigateToRoot() }
+            )
             #endif
             activityStrip
-            AppWebView(launch: launch)
+            AppWebView(
+                launch: launch,
+                appName: appName,
+                teardownHandle: teardownHandle,
+                onPageTitleChanged: { pageTitle = $0 }
+            )
         }
         .background(RiotTheme.paper(for: colorScheme))
         #if os(iOS)
@@ -277,6 +502,22 @@ struct AppActivityDigest: Equatable {
 /// there is exactly one copy of the security-relevant configuration.
 struct AppWebView {
     let launch: AppRuntimeLaunch
+    let appName: String
+    let teardownHandle: AppRuntimeTeardownHandle
+    let onPageTitleChanged: (String?) -> Void
+
+    @MainActor
+    init(
+        launch: AppRuntimeLaunch,
+        appName: String,
+        teardownHandle: AppRuntimeTeardownHandle,
+        onPageTitleChanged: @escaping (String?) -> Void
+    ) {
+        self.launch = launch
+        self.appName = appName
+        self.teardownHandle = teardownHandle
+        self.onPageTitleChanged = onPageTitleChanged
+    }
 
     /// `@MainActor` is explicit here: it was previously inferred from the
     /// `UIViewRepresentable` conformance, which this struct no longer declares
@@ -286,7 +527,10 @@ struct AppWebView {
         AppRuntimeCoordinator(
             bridge: AppBridgeController(bridge: launch.bridge),
             appIDHex: launch.appIDHex,
-            entryPoint: launch.entryPoint
+            entryPoint: launch.entryPoint,
+            appName: appName,
+            onPageTitleChanged: onPageTitleChanged,
+            teardownHandle: teardownHandle
         )
     }
 
@@ -309,6 +553,14 @@ struct AppWebView {
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
         coordinator.bridge.webView = webView
+        coordinator.observePageTitles(in: webView)
+        teardownHandle.install(
+            tearDown: { [weak coordinator, weak webView] in
+                guard let coordinator, let webView else { return }
+                coordinator.tearDown(webView)
+            },
+            navigateRoot: { [weak coordinator] in coordinator?.navigateToAppRoot() }
+        )
         // When a bridge call fails because the session was invalidated (§4.7),
         // close the app to Tools rather than showing a generic per-op error.
         coordinator.bridge.onInvalidated = { AppRuntimeView.postAppInvalidated() }
@@ -328,7 +580,9 @@ extension AppWebView: NSViewRepresentable {
         makeWebView(coordinator: context.coordinator)
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {}
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onPageTitleChanged = onPageTitleChanged
+    }
 
     /// When SwiftUI removes the hosted app (Close, a community switch, navigating
     /// away), tear the runtime down so no watch callback fires after the UI is
@@ -343,7 +597,9 @@ extension AppWebView: UIViewRepresentable {
         makeWebView(coordinator: context.coordinator)
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onPageTitleChanged = onPageTitleChanged
+    }
 
     /// See `dismantleNSView` — the same teardown on the UIKit side.
     static func dismantleUIView(_ webView: WKWebView, coordinator: AppRuntimeCoordinator) {
@@ -356,9 +612,21 @@ extension AppWebView: UIViewRepresentable {
 /// for one hosted app.
 @MainActor
 final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    static let navigateRootScript = """
+    (() => { window.dispatchEvent(new Event("riot:navigate-root")); return document.title; })()
+    """
+
     let bridge: AppBridgeController
     private let appIDHex: String
     private let entryPoint: String
+    private let appName: String
+    private weak var observedTitleWebView: WKWebView?
+    private weak var teardownHandle: AppRuntimeTeardownHandle?
+    private var titleObservation: NSKeyValueObservation?
+    private var lastPublishedPageTitle: String?
+    private var hasPublishedPageTitle = false
+    private var rootNavigationGeneration = 0
+    var onPageTitleChanged: ((String?) -> Void)?
     /// Mutated only on the main actor; read once from the nonisolated `deinit`,
     /// where `NotificationCenter.removeObserver` is itself thread-safe.
     private nonisolated(unsafe) var observer: NSObjectProtocol?
@@ -367,10 +635,53 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// be reading for a UI that is already gone.
     private var tornDown = false
 
-    init(bridge: AppBridgeController, appIDHex: String, entryPoint: String) {
+    init(
+        bridge: AppBridgeController,
+        appIDHex: String,
+        entryPoint: String,
+        appName: String = "",
+        onPageTitleChanged: ((String?) -> Void)? = nil,
+        teardownHandle: AppRuntimeTeardownHandle? = nil
+    ) {
         self.bridge = bridge
         self.appIDHex = appIDHex
         self.entryPoint = entryPoint
+        self.appName = appName
+        self.onPageTitleChanged = onPageTitleChanged
+        self.teardownHandle = teardownHandle
+    }
+
+    func observePageTitles(in webView: WKWebView) {
+        observedTitleWebView = webView
+        titleObservation?.invalidate()
+        titleObservation = webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView, !self.tornDown else { return }
+                self.publishPageTitle(from: webView.title)
+            }
+        }
+    }
+
+    func navigateToAppRoot() {
+        guard !tornDown, let webView = observedTitleWebView else { return }
+        rootNavigationGeneration &+= 1
+        let generation = rootNavigationGeneration
+        webView.evaluateJavaScript(Self.navigateRootScript) { [weak self, weak webView] result, error in
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, !self.tornDown, generation == self.rootNavigationGeneration else { return }
+                guard error == nil else { return }
+                let returnedTitle = result as? String
+                self.publishPageTitle(from: returnedTitle ?? webView?.title)
+            }
+        }
+    }
+
+    private func publishPageTitle(from rawTitle: String?) {
+        let pageTitle = AppBreadcrumbTitle.page(from: rawTitle, appName: appName)
+        guard !hasPublishedPageTitle || pageTitle != lastPublishedPageTitle else { return }
+        hasPublishedPageTitle = true
+        lastPublishedPageTitle = pageTitle
+        onPageTitleChanged?(pageTitle)
     }
 
     /// The initial load target: the verified entry point under the app's own
@@ -424,6 +735,12 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     func tearDown(_ webView: WKWebView) {
         guard !tornDown else { return }
         tornDown = true
+        rootNavigationGeneration &+= 1
+        titleObservation?.invalidate()
+        titleObservation = nil
+        observedTitleWebView = nil
+        onPageTitleChanged = nil
+        teardownHandle?.remove()
         if let observer {
             NotificationCenter.default.removeObserver(observer)
             self.observer = nil
@@ -443,7 +760,7 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         let allowed = navigationAction.request.url?.scheme == AppSchemeHandler.scheme
         decisionHandler(allowed ? .allow : .cancel)
@@ -463,6 +780,7 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     }
 
     deinit {
+        titleObservation?.invalidate()
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 }

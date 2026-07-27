@@ -5,8 +5,8 @@
 
 use riot_ffi::{
     open_local_profile, open_profile_from_sealed_identity, AlertCertainty, AlertDraftInput,
-    AlertSeverity, AlertUrgency, MobileError, MobileProfile, MobileSyncSession, PublicSpace,
-    SyncOutcomeKind,
+    AlertSeverity, AlertUrgency, AppRuntimeSession, MobileError, MobileProfile, MobileSyncSession,
+    PublicSpace, SyncOutcomeKind,
 };
 use std::sync::Arc;
 
@@ -318,7 +318,7 @@ fn nearby_sync_reconciles_trust_and_revoke_for_the_same_organizer_identity() {
     let sealed = sender
         .seal_identity(wrapping_key.clone())
         .expect("seal identity");
-    let receiver = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
+    let receiver = open_profile_from_sealed_identity(wrapping_key, sealed, None).expect("restore");
     receiver.join_public_space(space, Vec::new()).expect("join");
 
     let starter =
@@ -814,6 +814,287 @@ fn trust_lifecycle_is_lww_per_app() {
     assert!(!runtime.is_app_trusted(app.app_id.clone()).expect("check"));
     runtime.trust_app(app.app_id.clone()).expect("re-trust");
     assert!(runtime.is_app_trusted(app.app_id.clone()).expect("check"));
+}
+
+// --- WU-002a: two-phase trust prepare/persist/finalize ---
+
+fn organizer_with_installed_untrusted_app() -> (Arc<MobileProfile>, Arc<AppRuntimeSession>, String)
+{
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    assert!(!runtime
+        .is_app_trusted(app.app_id.clone())
+        .expect("untrusted"));
+    (profile, runtime, app.app_id)
+}
+
+#[test]
+fn prepare_trust_does_not_mutate_and_finalize_commits() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    let prepared = runtime
+        .prepare_app_trust(app_id.clone(), true)
+        .expect("prepare");
+    assert!(prepared.trusted);
+    assert!(!prepared.app_id.is_empty());
+    // prepare must NOT touch the live store.
+    assert!(
+        !runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "prepare must not grant trust"
+    );
+    runtime.finalize_app_trust().expect("finalize");
+    assert!(
+        runtime.is_app_trusted(app_id).unwrap(),
+        "finalize commits the grant"
+    );
+}
+
+#[test]
+fn prepare_without_finalize_leaves_trust_untouched() {
+    // Simulates a crash between the durable persist and finalize: the live store
+    // was never mutated by prepare, so trust stays off.
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    // A superseding prepare replaces the abandoned one, then finalize grants.
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn discard_clears_a_prepared_grant() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.discard_prepared_trust().unwrap();
+    assert!(
+        runtime.finalize_app_trust().is_err(),
+        "nothing to finalize after discard"
+    );
+    assert!(!runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn re_issuing_trust_for_an_already_trusted_app_is_idempotent() {
+    // Trust restart re-issues per persisted id (not a byte replay). Re-issue must
+    // stay trusted with no marker-cap growth (LWW at the same coordinate).
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id.clone()).unwrap());
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(
+        runtime.is_app_trusted(app_id).unwrap(),
+        "still trusted, exactly once"
+    );
+}
+
+#[test]
+fn finalize_with_nothing_prepared_errors() {
+    let (_profile, runtime, _app_id) = organizer_with_installed_untrusted_app();
+    assert!(runtime.finalize_app_trust().is_err());
+}
+
+// --- WU-002b: two-phase app-data prepare/persist/finalize ---
+
+#[test]
+fn prepare_app_data_does_not_mutate_and_finalize_commits() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    let prepared = runtime
+        .prepare_app_data_put(
+            app_id.clone(),
+            "items/a".to_string(),
+            b"{\"done\":false}".to_vec(),
+        )
+        .expect("prepare app data");
+
+    assert!(
+        !prepared.receipt.is_empty(),
+        "prepare returns persistence bytes"
+    );
+    assert_eq!(
+        runtime
+            .app_data_get(app_id.clone(), "items/a".to_string())
+            .expect("read before finalize"),
+        None,
+        "prepare must not mutate the live store"
+    );
+
+    runtime.finalize_app_data_put().expect("finalize app data");
+    assert_eq!(
+        runtime
+            .app_data_get(app_id, "items/a".to_string())
+            .expect("read after finalize"),
+        Some(b"{\"done\":false}".to_vec())
+    );
+}
+
+#[test]
+fn prepare_app_data_without_finalize_leaves_store_untouched() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"x".to_vec())
+        .expect("prepare app data");
+
+    assert_eq!(
+        runtime
+            .app_data_get(app_id, "items/a".to_string())
+            .expect("read without finalize"),
+        None
+    );
+}
+
+#[test]
+fn prepared_and_single_shot_receipts_share_the_replay_contract() {
+    let author = open_local_profile().expect("profile");
+    let space = author
+        .create_public_space("Prepared receipt fixture".into())
+        .expect("space");
+    let runtime = author.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+
+    let prepared = runtime
+        .prepare_app_data_put(
+            app.app_id.clone(),
+            "items/prepared".to_string(),
+            b"prepared".to_vec(),
+        )
+        .expect("prepare");
+    assert_eq!(
+        runtime
+            .app_data_get(app.app_id.clone(), "items/prepared".to_string())
+            .expect("source before finalize"),
+        None
+    );
+
+    let single_shot = runtime
+        .app_data_put_with_receipt(
+            app.app_id.clone(),
+            "items/single".to_string(),
+            b"single".to_vec(),
+        )
+        .expect("single-shot put");
+
+    let reopened = open_local_profile().expect("fresh profile");
+    reopened
+        .join_public_space(space, Vec::new())
+        .expect("join same space");
+    let reopened_runtime = reopened.app_runtime();
+    reopened_runtime
+        .replay_app_data_bundle(prepared.receipt)
+        .expect("replay prepared receipt");
+    reopened_runtime
+        .replay_app_data_bundle(single_shot)
+        .expect("replay single-shot receipt");
+
+    assert_eq!(
+        reopened_runtime
+            .app_data_get(app.app_id.clone(), "items/prepared".to_string())
+            .expect("prepared replay value"),
+        Some(b"prepared".to_vec())
+    );
+    assert_eq!(
+        reopened_runtime
+            .app_data_get(app.app_id, "items/single".to_string())
+            .expect("single-shot replay value"),
+        Some(b"single".to_vec())
+    );
+}
+
+#[test]
+fn preparing_app_data_after_trust_supersedes_the_trust_prepare() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+
+    runtime.finalize_app_data_put().unwrap();
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        Some(b"v".to_vec())
+    );
+}
+
+#[test]
+fn preparing_trust_after_app_data_supersedes_the_app_data_prepare() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn finalize_trust_rejects_a_prepared_app_data_mutation() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+
+    assert!(runtime.finalize_app_trust().is_err());
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn finalize_app_data_rejects_a_prepared_trust_mutation() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert!(!runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn app_data_finalize_fails_closed_when_the_generation_moves() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime
+        .trust_app(app_id.clone())
+        .expect("move the execution generation");
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None,
+        "a generation-mismatched finalize must not commit"
+    );
+}
+
+#[test]
+fn discard_prepared_app_data_clears_the_shared_slot() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime.discard_prepared_app_data().unwrap();
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1714,6 +1995,58 @@ fn app_execution_reads_and_commits_only_while_valid() {
 }
 
 #[test]
+fn prepare_app_execution_data_does_not_mutate_and_finalize_commits() {
+    let (profile, _runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id).expect("open");
+    let prepared = session
+        .prepare_app_execution_put("items/a".to_string(), b"gated".to_vec())
+        .expect("prepare gated write");
+
+    assert!(!prepared.receipt.is_empty());
+    assert_eq!(
+        session
+            .app_data_get("items/a".to_string())
+            .expect("read before finalize"),
+        None
+    );
+
+    session
+        .finalize_app_execution_put()
+        .expect("finalize gated write");
+    assert_eq!(
+        session
+            .app_data_get("items/a".to_string())
+            .expect("read after finalize"),
+        Some(b"gated".to_vec())
+    );
+}
+
+#[test]
+fn revoking_between_prepare_and_finalize_app_execution_fails_closed() {
+    let (profile, runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id.clone()).expect("open");
+    session
+        .prepare_app_execution_put("items/a".to_string(), b"blocked".to_vec())
+        .expect("prepare while trusted");
+
+    runtime.untrust_app(app_id.clone()).expect("revoke");
+    assert!(matches!(
+        session.finalize_app_execution_put(),
+        Err(MobileError::AppRejected)
+    ));
+
+    runtime.trust_app(app_id.clone()).expect("re-approve");
+    let fresh = profile.open_app_execution(app_id).expect("fresh session");
+    assert_eq!(
+        fresh
+            .app_data_get("items/a".to_string())
+            .expect("read after blocked finalize"),
+        None,
+        "revocation before finalize must leave the store untouched"
+    );
+}
+
+#[test]
 fn open_app_execution_refuses_an_untrusted_app_at_the_gate() {
     // The launch gate is now in Rust, not a native-host policy: a session cannot
     // even be opened for an app that is not currently trusted.
@@ -1914,4 +2247,171 @@ fn stale_approval_generation_fails_an_op_carrying_the_old_generation() {
     fresh
         .app_data_put("k2".to_string(), b"v2".to_vec())
         .expect("a current-generation session commits normally");
+}
+
+// --- WU-001: 32-app count cap + 3 MiB aggregate byte quota ---
+
+/// A distinct, tiny, valid manifest+bundle pair. A unique name + unique resource
+/// bytes give a unique app id. Each pair is a few hundred bytes — far under the
+/// 3 MiB / 32 ≈ 96 KiB per-pair budget, so 32 of them never trip the byte quota
+/// before the count cap.
+fn distinct_small_pair(index: usize) -> (Vec<u8>, Vec<u8>) {
+    use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+    use riot_core::apps::manifest::{encode_manifest, AppManifest};
+    use riot_core::willow::generate_communal_author;
+
+    let author = generate_communal_author().expect("author");
+    let bundle = AppBundle {
+        entry_point: "index.html".to_string(),
+        resources: vec![AppResource {
+            path: "index.html".to_string(),
+            content_type: "text/html".to_string(),
+            bytes: format!("<html>app {index}</html>").into_bytes(),
+        }],
+    };
+    let manifest = AppManifest {
+        name: format!("App {index}"),
+        description: "distinct".to_string(),
+        version: "1.0.0".to_string(),
+        author: author.identity(),
+        permissions: vec!["own-app-data".to_string()],
+        entry_point: "index.html".to_string(),
+    };
+    (
+        encode_manifest(&manifest).expect("manifest"),
+        encode_app_bundle(&bundle).expect("bundle"),
+    )
+}
+
+/// A distinct, valid pair whose bundle is ~900 KiB (well under the 1 MiB
+/// per-bundle `MAX_BUNDLE_TOTAL_BYTES`). Four of these sum past the 3 MiB
+/// aggregate quota while the count stays far below 32, so the refusal is on
+/// bytes, not count. (Three ~1 MiB bundles cannot reliably exceed 3 MiB because
+/// each single bundle is capped at 1 MiB, hence four smaller ones.)
+fn big_pair(index: usize) -> (Vec<u8>, Vec<u8>) {
+    use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+    use riot_core::apps::manifest::{encode_manifest, AppManifest};
+    use riot_core::willow::generate_communal_author;
+
+    let author = generate_communal_author().expect("author");
+    let mut bytes = vec![b'a'; 900_000];
+    // Keep each bundle distinct so it gets a distinct app id.
+    bytes.extend_from_slice(format!("<!-- {index} -->").as_bytes());
+    let bundle = AppBundle {
+        entry_point: "index.html".to_string(),
+        resources: vec![AppResource {
+            path: "index.html".to_string(),
+            content_type: "text/html".to_string(),
+            bytes,
+        }],
+    };
+    let manifest = AppManifest {
+        name: format!("Big {index}"),
+        description: "large".to_string(),
+        version: "1.0.0".to_string(),
+        author: author.identity(),
+        permissions: vec!["own-app-data".to_string()],
+        entry_point: "index.html".to_string(),
+    };
+    (
+        encode_manifest(&manifest).expect("manifest"),
+        encode_app_bundle(&bundle).expect("bundle"),
+    )
+}
+
+#[test]
+fn install_count_cap_is_thirty_two_not_sixteen() {
+    // Install 32 distinct valid pairs, then assert the 33rd is refused with the
+    // count-specific error (SessionLimit), not the byte error.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    for index in 0..32 {
+        let (manifest, bundle) = distinct_small_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("app {index} refused within cap: {error:?}"));
+    }
+    let (manifest, bundle) = distinct_small_pair(32);
+    let err = runtime
+        .install_app(manifest, bundle)
+        .expect_err("33rd refused");
+    assert!(matches!(err, MobileError::SessionLimit));
+}
+
+#[test]
+fn install_refuses_when_aggregate_pair_bytes_exceed_three_mib() {
+    // Install large-but-valid pairs whose running total crosses 3 MiB before the
+    // count cap; assert StoreFull (byte-specific), distinct from SessionLimit.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    // Three ~900 KiB pairs (~2.7 MiB aggregate) still fit.
+    for index in 0..3 {
+        let (manifest, bundle) = big_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("big pair {index} refused early: {error:?}"));
+    }
+    // The fourth crosses 3 MiB aggregate (~3.6 MiB) with count still at 3 << 32.
+    let (manifest, bundle) = big_pair(3);
+    let err = runtime
+        .install_app(manifest, bundle)
+        .expect_err("aggregate over 3 MiB refused");
+    assert!(matches!(err, MobileError::StoreFull));
+}
+
+#[test]
+fn reinstalling_a_held_pair_is_idempotent_at_the_cap() {
+    // Fill to 32, then reinstall a held ID: succeeds, count unchanged (a new ID
+    // still refuses on count afterwards).
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let first_pair = distinct_small_pair(0);
+    runtime
+        .install_app(first_pair.0.clone(), first_pair.1.clone())
+        .expect("first install");
+    for index in 1..32 {
+        let (manifest, bundle) = distinct_small_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("app {index} refused within cap: {error:?}"));
+    }
+    // Reinstalling the already-held pair 0 is idempotent, not a limit failure.
+    runtime
+        .install_app(first_pair.0, first_pair.1)
+        .expect("reinstalling a held pair at the cap");
+    // A genuinely new 33rd distinct app still refuses on count.
+    let (manifest, bundle) = distinct_small_pair(32);
+    assert!(matches!(
+        runtime.install_app(manifest, bundle),
+        Err(MobileError::SessionLimit)
+    ));
+}
+
+#[test]
+fn a_restored_generation_one_profile_still_serves_a_held_built_in() {
+    // open_profile_from_sealed_identity takes the restore path, which sets
+    // generation = None (gen-1). It must still resolve/serve a held built-in
+    // pair by exact ID via the dual-catalog resolver — a regression guard on the
+    // restore path + generation field (uses only pub FFI, no private access).
+    let original = open_local_profile().expect("profile");
+    let wrapping_key = vec![0x5a; 32];
+    let sealed = original
+        .seal_identity(wrapping_key.clone())
+        .expect("seal identity");
+    let restored = open_profile_from_sealed_identity(wrapping_key, sealed, None).expect("restore");
+
+    let built_in = built_in_apps().into_iter().next().expect("a built-in");
+    let app_id = built_in.app_id.to_vec();
+
+    let pair = restored
+        .app_runtime()
+        .app_pair_bytes(app_id.clone())
+        .expect("restored gen-1 profile resolves a built-in by exact id");
+    assert_eq!(
+        riot_core::apps::index::verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes)
+            .expect("the built-in pair re-verifies")
+            .to_vec(),
+        app_id,
+        "the served bytes are the ones the id was derived from",
+    );
 }

@@ -70,7 +70,7 @@
     .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
     .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
     .sitenav-brand:hover { opacity: .8; }
-    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
     .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
     .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
     .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
@@ -160,7 +160,6 @@
         <a href="/why-riot/">Why Riot</a>
         <a href="/guide/">Using Riot</a>
         <a href="/about/" aria-current="page">About</a>
-        <a href="/privacy/">Privacy</a>
         <a href="/open-source/">Open source</a>
         <a href="/community/">Community</a>
         <a href="/releases/">Get the app</a>
@@ -171,6 +170,7 @@
   <aside class="section-toc" aria-label="On this page">
     <p class="toc-label">On this page</p>
     <a href="#lineage">Lineage</a>
+    <a href="#research">Research</a>
     <a href="#publishing">Publishing</a>
     <a href="#why">Why this exists</a>
     <a href="#next">Honest gap</a>
@@ -181,7 +181,7 @@
       <div class="wrap">
         <p class="kicker">About Riot · a protest.net project</p>
         <h1>A free internet in the lineage of Indymedia.</h1>
-        <p class="lede">Riot lets a community run its own internet — <b>wikis, websites, news, social feeds, group decisions, and events</b> — carried phone to phone, with nothing for anyone to seize, pressure, or switch off. It is new, but it comes from decades of helping movements publish and keep control of their own tools. The full builder story lives on the <a href="/#builder">home page</a>; how Riot compares to adjacent protocols is in the <a href="/protocols/">protocol field guide</a>.</p>
+        <p class="lede">Riot helps a community carry <b>wikis, websites, news, social feeds, group decisions, and events</b> across participant-held copies and replaceable paths. That can reduce dependence on one provider, but it does not guarantee publishing, access, persistence, or resistance to censorship. Riot is new, but it comes from decades of helping movements publish and keep control of their own tools. The full builder story lives on the <a href="/#builder">home page</a>; how Riot compares to adjacent protocols is in the <a href="/protocols/">protocol field guide</a>.</p>
       </div>
     </header>
 
@@ -210,11 +210,32 @@
       </div>
     </section>
 
+    <section class="blue" id="research">
+      <div class="wrap">
+        <p class="eyebrow">Grounded in the field</p>
+        <h2>Not guesswork. Built on what communities actually need.</h2>
+        <p class="section-intro">Riot's design draws on two bodies of evidence: how mutual aid and movement media have actually worked under pressure, and what makes prosocial local spaces healthy when the pressure is off. The same structural answer keeps appearing: bounded, human-moderated, non-extractive spaces beat algorithmic feeds.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <h3>Crisis response &amp; movement media</h3>
+            <p>Occupy Sandy's shared editable ledger, Verificado 19S's two-source rumor protocol, TXTMob's channel matrix, the 2023 Türkiye earthquake response, and the 2019 Hong Kong protests. What people reach for when the network is down: consumer chat apps, even for trained responders. Trust is established in person. Many parallel channels beat one general feed.</p>
+            <p class="sources-line"><a href="https://github.com/rabble/riot/tree/main/docs/research" rel="noopener">Research docs ↗</a></p>
+          </article>
+          <article class="card">
+            <h3>Prosocial local spaces</h3>
+            <p>Front Porch Forum (235,000 members, 13,473 surveyed), the 2025 "Local Connection Crisis" survey (2,028 people), and New_ Public's Roundabout converge on <b>bounded content, named stewards, non-extractive incentives</b>. The finding that matters most: forums that were <em>more</em> active were rated <em>less</em> favorably. The platform people value is the one they don't live inside — which is Riot's model by design.</p>
+            <p class="sources-line"><a href="https://github.com/rabble/riot/blob/main/docs/research/2026-07-24-prosocial-local-spaces-research.md" rel="noopener">Prosocial synthesis ↗</a></p>
+          </article>
+        </div>
+        <p class="pull">The engagement-addiction risk that prosocial frameworks warn against is structurally lower for Riot by transport design: no server pushing a feed, no algorithm optimizing for time-on-device. That is not a policy choice to maintain — it is how the system is built. <a href="/why-riot/#research">Why Riot carries this further →</a></p>
+      </div>
+    </section>
+
     <section class="green" id="publishing">
       <div class="wrap">
         <p class="eyebrow">The point of Riot</p>
         <h2>Publish first. Carry it anywhere.</h2>
-        <p class="section-intro">Every earlier project in Riot's lineage was, at root, about getting movement information out when the usual channels would not carry it. Riot narrows that to one job: keep a community able to publish, verify, and merge its own information even when no server can be reached.</p>
+        <p class="section-intro">Every earlier project in Riot's lineage was, at root, about getting movement information out when the usual channels would not carry it. Riot narrows that to one job: help a community prepare, verify, and merge information from participant-held copies. Local use does not require a reachable server; exchange still requires a compatible path that is actually available.</p>
         <div class="grid cards-3">
           <article class="card">
             <h3>Open newswire</h3>
@@ -226,7 +247,7 @@
           </article>
           <article class="card">
             <h3>Verify and merge</h3>
-            <p>Nothing is accepted without a human looking at it first. Signed entries merge across devices so a community's record survives a raid on any single address.</p>
+            <p>Nothing is accepted without a human looking at it first. Signed entries can merge across functioning devices that exchange them, reducing dependence on any single address; this does not guarantee every record has another reachable copy.</p>
           </article>
         </div>
         <p class="pull">This is publishing as mutual aid, not publishing as a platform. For the data model that makes it work, see the <a href="/protocols/">protocol field guide</a>.</p>
@@ -259,7 +280,7 @@
             <p class="sources-line"><a href="https://www.heise.de/en/news/Acute-threat-Interior-ministers-demand-complete-ban-of-Indymedia-11350956.html" rel="noopener">2026 report ↗</a></p>
           </article>
         </div>
-        <p class="pull">Local-first removes a mandatory home server; it does not repeal radio range, device loss, or hostile peers. But it does mean a raid on one address cannot take a community's data with it.</p>
+        <p class="pull">Local-first removes a mandatory home server; it does not repeal radio range, device loss, or hostile peers. Already-held participant copies can reduce dependence on one address, without guaranteeing that another reachable device holds a complete copy.</p>
       </div>
     </section>
 

@@ -4,6 +4,13 @@
 <dict>
 	<key>ATSApplicationFontsPath</key>
 	<string>Fonts</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<!-- REQUIRED by App Store submission: the archive is rejected outright
+	     ("The Info.plist must contain a LSApplicationCategoryType key") without
+	     it. Must be a real UTI from Apple's category list, not free text. -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.social-networking</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Find nearby Riot phones you choose to connect with.</string>
 	<key>NSBonjourServices</key>

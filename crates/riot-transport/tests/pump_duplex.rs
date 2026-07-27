@@ -35,7 +35,12 @@ async fn reconcile_over_a_duplex_delivers_the_entries_bundle() {
         true
     });
 
-    let (sent, got) = tokio::join!(send_side, recv_side);
+    // Hard outer timeout so a deadlocked reconcile fails in seconds, not hangs.
+    let (sent, got) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(send_side, recv_side)
+    })
+    .await
+    .expect("pump reconcile timed out (>30s)");
     let sender = sent.expect("sender pump");
     let receiver = got.expect("receiver pump");
 

@@ -19,7 +19,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
 use riot_anchor::control::{AnchorControlContext, AnchorControlService};
 use riot_anchor::daemon::{
-    control_handler, spawn_control_actor, Ed25519OperatorSigner, TicketRootAuthorityPolicy,
+    control_handler, spawn_control_actor, ActorJob, ControlJob, ControlReply,
+    Ed25519OperatorSigner, TicketRootAuthorityPolicy,
 };
 use riot_anchor::repository::AnchorRepository;
 use riot_anchor::work::TokenSecretRing;
@@ -264,15 +265,20 @@ fn entropy_from(seed: u8) -> impl FnMut() -> [u8; 32] {
     }
 }
 
-/// Build a running actor + registered anchor/1 handler, returning the router.
-fn built_router() -> AlpnRouter {
+/// The control service the actor tests drive (operator seed 1, ring epoch 1).
+fn control_service() -> AnchorControlService<TicketRootAuthorityPolicy, Ed25519OperatorSigner> {
     let op = sk(1);
     let ctx = context(&op);
     let policy = TicketRootAuthorityPolicy::new(ctx.sync_version);
     let signer = Ed25519OperatorSigner::from_secret_bytes(op.to_bytes());
-    let service = AnchorControlService::new(ctx, policy, signer, TokenSecretRing::new(1, d32(200)));
+    AnchorControlService::new(ctx, policy, signer, TokenSecretRing::new(1, d32(200)))
+}
+
+/// Build a running actor + registered anchor/1 handler, returning the router.
+fn built_router() -> AlpnRouter {
+    let service = control_service();
     let repo = AnchorRepository::open_in_memory().unwrap();
-    let tx = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)));
+    let (tx, _actor) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 8);
     let now_fn: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| 1_500u64);
     let handler = control_handler(tx, now_fn);
 
@@ -460,4 +466,132 @@ async fn ticket_with_wrong_min_sync_version_is_refused() {
         ),
         "min_sync_version != 2 must be refused unsupported_version",
     );
+}
+
+#[tokio::test]
+async fn lower_ticket_epoch_is_refused_after_a_higher_epoch_was_admitted() {
+    let router = built_router();
+    let (halves, mut peer_w, mut peer_r) = wire();
+    let conn = FakeConn::new(Some(ALPN_ANCHOR_V1), Some(halves));
+    let dispatch = tokio::spawn(async move { router.dispatch(conn).await });
+    let root = sk(9);
+
+    let higher = signed_ticket(&root, |core| {
+        core.transport_epoch = 5;
+    });
+    write_frame(
+        &mut peer_w,
+        &prepare_frame(d16(0x51), prepare_body_with_ticket(60, higher)),
+    )
+    .await;
+    let admitted = read_frame(&mut peer_r)
+        .await
+        .expect("higher-epoch response");
+    assert!(
+        matches!(
+            decode_canonical::<ControlResponseV1>(&admitted, MAX_CONTROL_FRAME_BYTES)
+                .unwrap()
+                .outcome,
+            ControlOutcome::Success(ControlSuccess::PrepareHost(_))
+        ),
+        "higher epoch must establish the durable floor",
+    );
+
+    let lower = signed_ticket(&root, |core| {
+        core.transport_epoch = 4;
+    });
+    write_frame(
+        &mut peer_w,
+        &prepare_frame(d16(0x52), prepare_body_with_ticket(70, lower)),
+    )
+    .await;
+    let refused = read_frame(&mut peer_r).await.expect("lower-epoch response");
+    assert!(
+        matches!(
+            decode_canonical::<ControlResponseV1>(&refused, MAX_CONTROL_FRAME_BYTES)
+                .unwrap()
+                .outcome,
+            ControlOutcome::Refused(ControlRefusal::InvalidTicketAuthority)
+        ),
+        "a lower signed transport epoch must fail closed",
+    );
+
+    drop(peer_w);
+    assert!(dispatch.await.unwrap().is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// The single-writer actor THREAD (WU-B): a control job still round-trips after
+// the tokio::spawn -> std::thread move, and the thread stops when every sender
+// is dropped (no leaked OS thread, no hang on shutdown).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn actor_thread_processes_jobs_and_stops_when_senders_drop() {
+    let repo = AnchorRepository::open_in_memory().expect("open");
+    let service = control_service();
+    let (tx, join_handle) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 4);
+
+    // A garbage frame must yield Close (decode failure), not a hang or panic.
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(ActorJob::Control(ControlJob {
+        request: vec![0xFF; 8],
+        now: 1_700_000_000,
+        reply: reply_tx,
+    }))
+    .expect("actor alive");
+    assert_eq!(reply_rx.await.expect("reply"), ControlReply::Close);
+
+    // Dropping the last sender must let the thread exit: join must complete.
+    drop(tx);
+    tokio::task::spawn_blocking(move || join_handle.join().expect("actor thread exits cleanly"))
+        .await
+        .expect("join");
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup-delivery losslessness (WU-C fix): the actor channel is UNBOUNDED, so
+// enqueueing never fails or blocks under a busy queue. The old bounded(64)
+// channel made the SyncCloseGuard's `try_send` silently drop session Closes
+// whenever 64+ jobs were queued — routine backpressure with 256 concurrent
+// handlers — permanently stranding SyncSessionTable slots. This test floods
+// the queue far past the old capacity from the sending side WITHOUT draining a
+// single reply, then verifies every job (the stand-in for a guard Close at the
+// back of a busy queue) is delivered and processed.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn busy_actor_queue_never_drops_jobs() {
+    let repo = AnchorRepository::open_in_memory().expect("open");
+    let service = control_service();
+    let (tx, join_handle) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 4);
+
+    // Enqueue 200 jobs synchronously — over 3x the old bounded capacity —
+    // before the actor can possibly have drained them. Every send must
+    // succeed immediately (send is sync and infallible while the actor
+    // lives); with the old bounded channel this loop would have blocked or,
+    // via try_send, dropped jobs.
+    let mut replies = Vec::new();
+    for _ in 0..200 {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.send(ActorJob::Control(ControlJob {
+            request: vec![0xFF; 8],
+            now: 1_700_000_000,
+            reply: reply_tx,
+        }))
+        .expect("unbounded send never fails while the actor lives");
+        replies.push(reply_rx);
+    }
+
+    // Every queued job — including the last one, sent into the busiest
+    // possible queue — is processed: no reply channel is ever dropped
+    // unanswered.
+    for reply_rx in replies {
+        assert_eq!(reply_rx.await.expect("reply"), ControlReply::Close);
+    }
+
+    drop(tx);
+    tokio::task::spawn_blocking(move || join_handle.join().expect("actor thread exits cleanly"))
+        .await
+        .expect("join");
 }

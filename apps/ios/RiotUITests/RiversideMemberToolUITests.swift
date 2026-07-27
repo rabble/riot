@@ -10,13 +10,14 @@ import XCTest
 ///
 /// Community-first shell (2A): the demo is loaded from the no-community launch
 /// screen; its tools live on the Tools route.
+@MainActor
 final class RiversideMemberToolUITests: XCTestCase {
-    func testDemoMemberOpensAnOrganizerTrustedToolWithoutAReviewGate() {
+    func testDemoMemberOpensAnOrganizerTrustedToolWithoutAReviewGate() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["RIOT_UI_TEST_RUN_ID"] = UUID().uuidString
+        app.launchEnvironment["RIOT_UI_TEST_SUPPRESS_NOTIFICATION_PERMISSION"] = "1"
+        app.launchEnvironment["RIOT_UI_TEST_DISABLE_NEARBY_AUTOSTART"] = "1"
         app.launch()
-        if app.alerts.firstMatch.waitForExistence(timeout: 2) {
-            app.alerts.firstMatch.buttons.firstMatch.tap()
-        }
 
         // First-run onboarding opens on a welcome screen; advance to the setup
         // screen where create / join / demo live. Guarded, so a re-run that
@@ -37,9 +38,18 @@ final class RiversideMemberToolUITests: XCTestCase {
         XCTAssertTrue(tools.waitForExistence(timeout: 10), "a loaded community shows the four routes")
         tools.tap()
 
+        XCTAssertTrue(
+            app.staticTexts["Riverside Tenants Union"].waitForExistence(timeout: 10),
+            "Tools must visibly name the selected community"
+        )
+        XCTAssertTrue(app.staticTexts["In Riverside Tenants Union"].waitForExistence(timeout: 5))
+
         // As a member of an organizer-shaped space, the Checklist must be OPENABLE
         // straight away…
-        let open = app.buttons["directory-open-Checklist"]
+        let open = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "directory-open-"))
+            .matching(NSPredicate(format: "label == %@", "Open Checklist"))
+            .firstMatch
         XCTAssertTrue(
             open.waitForExistence(timeout: 10),
             "an organizer-trusted tool must be openable by a demo member"
@@ -48,12 +58,45 @@ final class RiversideMemberToolUITests: XCTestCase {
         // …and there must be NO Review gate. A member cannot approve, so a
         // Review affordance here would be the exact dead end 0B removes.
         XCTAssertFalse(
-            app.buttons["directory-review-Checklist"].exists,
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label CONTAINS[c] %@", "Review Checklist"))
+                .firstMatch.exists,
             "a demo member must never be sent to a Review gate they cannot pass"
         )
+        XCTAssertFalse(
+            app.buttons
+                .matching(NSPredicate(format: "identifier BEGINSWITH %@", "directory-add-"))
+                .firstMatch.exists,
+            "a member must not receive an organizer-only Add control"
+        )
+
+        for phrase in ["Built in", "From your communities", "Share with this community"] {
+            XCTAssertEqual(
+                app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label CONTAINS[c] %@", phrase))
+                    .count,
+                0,
+                "Tools must not expose “\(phrase)”"
+            )
+        }
+
+        let toolsScreenshot = XCTAttachment(screenshot: app.screenshot())
+        toolsScreenshot.name = "community-scoped-tools-enabled-member"
+        toolsScreenshot.lifetime = .keepAlways
+        add(toolsScreenshot)
+        try app.performAccessibilityAudit(
+            for: [.hitRegion, .sufficientElementDescription, .trait]
+        ) { issue in
+            issue.element?.label != "Riverside Tenants Union"
+        }
 
         // Opening it actually serves the tool's pages.
-        open.tap()
+        let openAfterAudit = app.descendants(matching: .any)[open.identifier]
+        for _ in 0..<8 where !openAfterAudit.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(openAfterAudit.isHittable)
+        openAfterAudit.tap()
         XCTAssertTrue(
             app.webViews.firstMatch.waitForExistence(timeout: 10),
             "the organizer-trusted tool opens and serves its page"

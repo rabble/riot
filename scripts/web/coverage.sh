@@ -74,9 +74,14 @@ tarpaulin_floor=$(node --input-type=module --eval \
 case "$tarpaulin_floor" in
   ''|*[!0-9]*) fail ".coverage-thresholds.json thresholds.tarpaulin.lines must be an integer percent" ;;
 esac
-cargo tarpaulin --workspace --all-features --timeout 300 --fail-under "$tarpaulin_floor"
+# Path-patched crates remain dependencies, not Riot workspace products. Both
+# coverage engines otherwise report their vendored source as first-party code,
+# even though its own upstream suite is verified separately.
+cargo tarpaulin --workspace --all-features --timeout 300 \
+  --exclude-files 'vendor/*' --fail-under "$tarpaulin_floor"
 cargo +nightly-2026-07-01 llvm-cov clean --workspace
 cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch \
+  --ignore-filename-regex '(^|/)vendor/' \
   --json --output-path target/llvm-cov/riot.json
 node scripts/web/validate-llvm-coverage.mjs target/llvm-cov/riot.json
 npm run test:web:coverage

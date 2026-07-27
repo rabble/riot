@@ -16,6 +16,8 @@ mod schema;
 #[cfg(feature = "sqlite")]
 pub use backup::BackupManifest;
 #[cfg(feature = "sqlite")]
+pub(crate) use database::{map_sqlite_error, WriteEstimate};
+#[cfg(feature = "sqlite")]
 pub use database::{
     CheckpointMode, CheckpointResult, DatabaseConfig, DatabaseError, DatabaseSettings, Durability,
     JournalMode, RiotDatabase, RiotReadSnapshot,

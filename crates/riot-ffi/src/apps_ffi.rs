@@ -42,6 +42,21 @@ pub struct InstalledAppRecord {
     pub permissions: Vec<String>,
 }
 
+/// The result of `prepare_app_trust` (WU-002a): the app id + decision the host
+/// records in its durable trusted-ID set between prepare and finalize. No trust
+/// marker bytes cross the FFI for trust — restart re-issues per persisted id.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PreparedTrustRecord {
+    pub app_id: String,
+    pub trusted: bool,
+}
+
+/// Receipt bytes produced before an app-data mutation reaches the live store.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PreparedAppDataRecord {
+    pub receipt: Vec<u8>,
+}
+
 /// One row of the computed app directory (`riot_core::apps::directory::
 /// AppListing` flattened to FFI types). Unlike `InstalledAppRecord`, whose
 /// `app_id` predates the directory surface and is hex text, all 32-byte ids
@@ -164,6 +179,26 @@ impl AppExecutionSession {
         crate::mobile_state::app_execution_put_with_receipt(&self.inner, &self.snapshot, key, value)
     }
 
+    /// Prepare persistence bytes without committing app data.
+    pub fn prepare_app_execution_put(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<PreparedAppDataRecord, MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::prepare_app_execution_put(&self.inner, &self.snapshot, key, value)
+    }
+
+    /// Commit the prepared app-data write after host persistence succeeds.
+    pub fn finalize_app_execution_put(&self) -> Result<(), MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::finalize_app_execution_put(&self.inner, &self.snapshot)
+    }
+
     /// Whether this session is still valid right now: not destroyed, and passing
     /// the same revocation / namespace / generation revalidation the data path
     /// runs. The native bridge calls this after an `AppRejected` from a read or
@@ -253,6 +288,30 @@ impl AppRuntimeSession {
         crate::mobile_state::set_app_trust(&self.inner, app_id, false)
     }
 
+    /// Two-phase trust, phase 1 (WU-002a): validate + sign without mutating the
+    /// live store. The host durably records the returned `{app_id, trusted}` in
+    /// its trusted-ID set, then calls `finalize_app_trust`.
+    pub fn prepare_app_trust(
+        &self,
+        app_id: String,
+        trusted: bool,
+    ) -> Result<PreparedTrustRecord, MobileError> {
+        crate::mobile_state::prepare_app_trust(&self.inner, app_id, trusted)
+    }
+
+    /// Two-phase trust, phase 2 (WU-002a): commit the held prepared mutation
+    /// after the durable persist. Errors (trust unchanged) if nothing is
+    /// prepared or the generation moved.
+    pub fn finalize_app_trust(&self) -> Result<(), MobileError> {
+        crate::mobile_state::finalize_app_trust(&self.inner)
+    }
+
+    /// Drop a prepared trust mutation without committing (host persist failed or
+    /// the flow was cancelled).
+    pub fn discard_prepared_trust(&self) -> Result<(), MobileError> {
+        crate::mobile_state::discard_prepared_trust(&self.inner)
+    }
+
     pub fn is_app_trusted(&self, app_id: String) -> Result<bool, MobileError> {
         crate::mobile_state::is_app_trusted(&self.inner, app_id)
     }
@@ -294,6 +353,26 @@ impl AppRuntimeSession {
         value: Vec<u8>,
     ) -> Result<Vec<u8>, MobileError> {
         crate::mobile_state::app_data_put_with_receipt(&self.inner, app_id, key, value)
+    }
+
+    /// Prepare persistence bytes without committing app data.
+    pub fn prepare_app_data_put(
+        &self,
+        app_id: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<PreparedAppDataRecord, MobileError> {
+        crate::mobile_state::prepare_app_data_put(&self.inner, app_id, key, value)
+    }
+
+    /// Commit the prepared app-data write after host persistence succeeds.
+    pub fn finalize_app_data_put(&self) -> Result<(), MobileError> {
+        crate::mobile_state::finalize_app_data_put(&self.inner)
+    }
+
+    /// Clear the shared prepared-mutation slot without committing.
+    pub fn discard_prepared_app_data(&self) -> Result<(), MobileError> {
+        crate::mobile_state::discard_prepared_app_data(&self.inner)
     }
 
     /// Re-admits app-data bundle bytes previously returned by

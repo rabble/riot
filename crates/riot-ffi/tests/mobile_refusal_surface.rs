@@ -126,7 +126,8 @@ fn an_unopenable_database_path_is_reported_as_a_database_error() {
         open_profile_from_sealed_identity_with_database(
             unusable,
             TEST_WRAPPING_KEY.to_vec(),
-            sealed
+            sealed,
+            None
         ),
         Err(MobileError::Database)
     ));
@@ -538,8 +539,8 @@ fn a_replay_bundle_with_no_valid_entries_is_refused() {
     ));
 }
 
-/// The installed-app cap is real: the seventeenth distinct app is refused with
-/// `SESSION_LIMIT`, and the sixteen already installed are untouched.
+/// The installed-app cap is real: the thirty-third distinct app is refused with
+/// `SESSION_LIMIT`, and the thirty-two already installed are untouched.
 #[test]
 fn installing_past_the_cap_is_a_session_limit() {
     use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
@@ -574,9 +575,9 @@ fn installing_past_the_cap_is_a_session_limit() {
     let profile = profile_with_space();
     let runtime = profile.app_runtime();
 
-    // MAX_INSTALLED_APPS is 16.
+    // MAX_INSTALLED_APPS is 32.
     let mut installed = Vec::new();
-    for index in 0..16 {
+    for index in 0..32 {
         let (manifest, bundle) = pair(index);
         let record = runtime
             .install_app(manifest, bundle)
@@ -587,11 +588,11 @@ fn installing_past_the_cap_is_a_session_limit() {
     installed.dedup();
     assert_eq!(
         installed.len(),
-        16,
+        32,
         "the apps must be distinct to fill the cap"
     );
 
-    let (manifest, bundle) = pair(16);
+    let (manifest, bundle) = pair(32);
     assert!(
         matches!(
             runtime.install_app(manifest, bundle),
@@ -619,17 +620,17 @@ fn a_sealed_identity_that_does_not_open_is_invalid_input() {
 
     // Wrong key.
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x01; 32], sealed.clone()),
+        open_profile_from_sealed_identity(vec![0x01; 32], sealed.clone(), None),
         Err(MobileError::InvalidInput)
     ));
     // Garbage ciphertext.
     assert!(matches!(
-        open_profile_from_sealed_identity(TEST_WRAPPING_KEY.to_vec(), vec![0xff; 64]),
+        open_profile_from_sealed_identity(TEST_WRAPPING_KEY.to_vec(), vec![0xff; 64], None),
         Err(MobileError::InvalidInput)
     ));
     // A key that is not 32 bytes is refused before it is used.
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x42; 16], sealed),
+        open_profile_from_sealed_identity(vec![0x42; 16], sealed, None),
         Err(MobileError::InvalidInput)
     ));
     assert!(matches!(

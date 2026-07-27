@@ -191,6 +191,7 @@ pub fn listing_payload(
         region: None,
         issued_unix_seconds: issued,
         expiry_unix_seconds: expiry,
+        steward_name: None,
     }
 }
 

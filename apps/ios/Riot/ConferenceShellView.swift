@@ -219,6 +219,7 @@ private struct OnboardingView: View {
         switch step {
         case .welcome:
             OnboardingWelcomeView(
+                model: model,
                 onContinue: {
                     setupIntent = .general
                     step = .setup
@@ -243,6 +244,7 @@ private struct OnboardingView: View {
 /// Riot works" explainer that renders the shared five-beat story.
 private struct OnboardingWelcomeView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var model: RiotAppModel
     let onContinue: () -> Void
     let onJoin: () -> Void
     @State private var isExplainerPresented = false
@@ -282,6 +284,11 @@ private struct OnboardingWelcomeView: View {
                             .accessibilityIdentifier("onboarding-join-by-reference")
                     }
                 }
+
+                // The real "leave the room, still sync" path: dial the built-in
+                // anchor relay by NodeId over the internet and pull a live
+                // community. No IP, no account.
+                AnchorRelaySyncCard(model: model)
             }
             .padding(20)
         }
@@ -358,6 +365,7 @@ private struct OnboardingSetupView: View {
     @State private var isCreatePresented = false
     @State private var isJoinPresented = false
     @State private var isFollowSitePresented = false
+    @State private var isDiscoverPresented = false
     @State private var hasAppliedInitialIntent = false
     @AccessibilityFocusState private var nameErrorFocused: Bool
 
@@ -388,10 +396,16 @@ private struct OnboardingSetupView: View {
                                 .accessibilityFocused($nameErrorFocused)
                         }
 
+                        Button("Discover communities") {
+                            perform(.join) { isDiscoverPresented = true }
+                        }
+                        .buttonStyle(.riotPrimary)
+                        .accessibilityIdentifier("launch-discover")
+
                         Button("Join with a link or QR") {
                             perform(.join) { isJoinPresented = true }
                         }
-                        .buttonStyle(.riotPrimary)
+                        .buttonStyle(.riotSecondary)
                         .accessibilityIdentifier("launch-join-by-reference")
 
                         Button("Create a community") { isCreatePresented = true }
@@ -437,6 +451,24 @@ private struct OnboardingSetupView: View {
         .sheet(isPresented: $isJoinPresented) {
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
         }
+        // The front door for a person with no community yet: browse and preview,
+        // then route into the same paste/QR join (or, for a real feed row, commit
+        // the reference). Self-contained here so onboarding doesn't depend on the
+        // in-community shell's sheets.
+        .sheet(isPresented: $isDiscoverPresented) {
+            DiscoverView(
+                onJoin: handleDiscoverJoin,
+                onImportCrew: {
+                    isDiscoverPresented = false
+                    isJoinPresented = true
+                },
+                onCreate: {
+                    isDiscoverPresented = false
+                    isCreatePresented = true
+                },
+                onClose: { isDiscoverPresented = false }
+            )
+        }
         .sheet(isPresented: $isFollowSitePresented) {
             FollowSiteSheet(model: model, onClose: { isFollowSitePresented = false })
         }
@@ -466,6 +498,24 @@ private struct OnboardingSetupView: View {
         )
         showNameError = result == .nameSaveFailed
         nameErrorFocused = showNameError
+    }
+
+    /// Routes a Preview's join action from the onboarding Discover sheet into the
+    /// existing join flow: a real reference is committed directly, a seed with no
+    /// reference falls back to the paste/QR sheet. Kept local to onboarding so the
+    /// join sheet it opens is this view's own.
+    private func handleDiscoverJoin(_ community: DiscoverableCommunity) {
+        isDiscoverPresented = false
+        switch CommunityJoinRoute.route(for: community) {
+        case let .commitReference(reference):
+            if let preview = try? JoinReferenceModel().preview(fromPastedString: reference) {
+                model.commitJoin(preview: preview)
+            } else {
+                isJoinPresented = true
+            }
+        case .pasteOrScan:
+            isJoinPresented = true
+        }
     }
 
     private func loadDemoSpace() {
@@ -921,9 +971,12 @@ private struct CommunityShellView: View {
     /// The tool running in the detail pane (macOS) / full-screen (iPhone), and
     /// the card that opened it, so focus returns there on close.
     @State private var runningTool: RiotSpaceApp?
+    @State private var runtimeMount = AppRuntimeMountState()
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
+    /// The contributor whose page is open, if any — People roster → person.
+    @State private var selectedPerson: PersonRow?
     @State private var composerPresentation: ComposerPresentationState = .closed
     @State private var transitionToken: CommunityTransitionGate.Token?
     @FocusState private var focusedComposerTrigger: ComposerOrigin?
@@ -976,6 +1029,19 @@ private struct CommunityShellView: View {
         let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
         let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
         let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()
+        let reactionWriter: (any NewswireReactionWriting)?
+        #if DEBUG
+        if let repository = model.profileRepository,
+           let configuration = model.reactionUITestConfiguration {
+            reactionWriter = repository.makeNewswireReactionWriter(
+                uiTestConfiguration: configuration
+            )
+        } else {
+            reactionWriter = model.profileRepository?.makeNewswireReactionWriter()
+        }
+        #else
+        reactionWriter = model.profileRepository?.makeNewswireReactionWriter()
+        #endif
         _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
             projector: wireProjector,
             editor: editor,
@@ -990,8 +1056,8 @@ private struct CommunityShellView: View {
             // Communal reply signer — the same repository, or nil (reply hidden)
             // when no profile is open.
             commenter: model.profileRepository,
-            // Communal reaction signer — same repository; nil hides the reaction bar.
-            reactor: model.profileRepository
+            // Profile-backed actor; nil hides the reaction bar.
+            reactionWriter: reactionWriter
         ))
     }
 
@@ -1021,7 +1087,32 @@ private struct CommunityShellView: View {
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
             .onAppear { registerCommunityScope() }
-            .onDisappear { unregisterCommunityScope() }
+            .onDisappear {
+                newswire.cancelReactionTasks()
+                unregisterCommunityScope()
+            }
+            // Three taps on the community chrome, no confirmation: the fast
+            // route for the moment a phone is being taken. The undo window, not
+            // a dialog, is what protects against a mis-tap.
+            .modifier(EmergencyWipeTriggers(controller: model.emergencyWipe))
+            // A contributor's page: who they are + what they posted. The posts
+            // come from the SAME newswire projection Home draws, filtered to this
+            // author — no new FFI. Tapping a post opens the community's canonical
+            // report detail via the shared newswire surface model.
+            .sheet(item: $selectedPerson) { person in
+                NavigationStack {
+                    PersonDetailView(
+                        model: PersonDetailModel(
+                            person: person,
+                            projector: model.profileRepository ?? UnavailableWireProjector(),
+                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+                            communityName: community.name
+                        ),
+                        surfaceModel: newswire,
+                        onClose: { selectedPerson = nil }
+                    )
+                }
+            }
             .sheet(item: $identitySheet) { destination in
                 NavigationStack {
                     switch destination {
@@ -1049,13 +1140,69 @@ private struct CommunityShellView: View {
             // community-name control; selecting a row switches, an unavailable row
             // recovers in place.
             .sheet(isPresented: $model.isCommunityChooserPresented) {
-                CommunityChooserView(model: model)
+                CommunityChooserView(
+                    model: model,
+                    currentCommunityID: community.namespaceID,
+                    mountedAppName: runningTool?.name,
+                    onSelectCommunity: { namespaceID in
+                        MountedToolExit.perform(closeTool: closeTool) {
+                            model.switchCommunity(namespaceID: namespaceID)
+                        }
+                    },
+                    onFindNearby: {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) { model.findNearby() }
+                    },
+                    onCreateCommunity: {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
+                            model.requestCreateCommunity()
+                        }
+                    },
+                    onJoinByReference: {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
+                            model.requestJoinByReference()
+                        }
+                    },
+                    onDiscover: {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
+                            model.requestDiscover()
+                        }
+                    }
+                )
             }
             // Join with a link or QR — raised from the chooser's "Join another" row
             // (and, on the launch screen, its own button). Presented at the shell so
             // both entry points share one sheet and one core call.
             .sheet(isPresented: $model.isJoinByReferencePresented) {
                 JoinByReferenceSheet(model: model, onClose: model.dismissJoinByReference)
+            }
+            // Discover communities — the front door for finding a community you have
+            // no link for. Raised from the chooser's "Discover communities" row.
+            // Joining routes back through the existing commit-join / paste-QR paths.
+            .sheet(isPresented: $model.isDiscoverPresented) {
+                DiscoverView(
+                    onJoin: { model.joinDiscovered($0) },
+                    onImportCrew: {
+                        model.dismissDiscover()
+                        model.requestJoinByReference()
+                    },
+                    onCreate: {
+                        model.dismissDiscover()
+                        model.requestCreateCommunity()
+                    },
+                    onClose: model.dismissDiscover
+                )
             }
             // Create another community — the chooser's "Create a community" row.
             .sheet(isPresented: createCommunityBinding) {
@@ -1153,7 +1300,7 @@ private struct CommunityShellView: View {
         composerPresentation.close()
         identitySheet = nil
         confirmingLeave = false
-        runningTool = nil
+        closeTool()
         nearby.onBeforeSpaceJoin = nil
         nearby.onSpaceJoined = nil
         if !preparation.transportMustContinue {
@@ -1257,6 +1404,61 @@ private struct CommunityShellView: View {
                         .accessibilityIdentifier("route-\(destination.rawValue)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
+
+                    // "Your places" — the community list lives in the macOS sidebar
+                    // so moving between rooms is spatial and always visible (no
+                    // hidden Command-K popover). Plain rows (no ScrollView) so the
+                    // sidebar lays out exactly like the route list above; each row
+                    // shows its own sync heartbeat and the current room is selected.
+                    if !model.communities.isEmpty {
+                        Text("Your places")
+                            .font(.caption2).textCase(.uppercase)
+                            .tracking(1.2).fontWeight(.semibold)
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.55))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 2)
+
+                        ForEach(model.communities) { row in
+                            let selected = row.namespaceID == community.namespaceID
+                            Button {
+                                guard row.available, !selected else { return }
+                                model.switchCommunity(namespaceID: row.namespaceID)
+                            } label: {
+                                let placeName = row.name.isEmpty
+                                    ? (selected ? community.name : "Community")
+                                    : row.name
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(placeName)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(row.syncFreshness)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle((selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)).opacity(0.6))
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme))
+                            .background(selected ? RiotTheme.pink(for: colorScheme) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .opacity(row.available ? 1 : 0.55)
+                            .accessibilityIdentifier(row.accessibilityID)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                        }
+
+                        Button { model.openCommunityChooser() } label: {
+                            Label("Find another", systemImage: "plus")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.65))
+                        .accessibilityIdentifier("sidebar-find-community")
+                    }
                 }
                 .padding(8)
                 Spacer()
@@ -1274,8 +1476,12 @@ private struct CommunityShellView: View {
                         repository: repository,
                         appIDHex: tool.appIDHex,
                         appName: tool.name,
+                        communityName: community.name,
+                        teardownHandle: runtimeMount.teardownHandle,
+                        onOpenCommunity: model.openCommunityChooser,
                         onClose: closeTool
                     )
+                    .id(runtimeMount.id)
                     .onExitCommand(perform: escape)
                 } else {
                     routeView(navigation.destination)
@@ -1368,8 +1574,11 @@ private struct CommunityShellView: View {
         Binding(
             get: { runningTool },
             set: { newValue in
-                if newValue == nil, runningTool != nil { _ = focus.close() }
-                runningTool = newValue
+                if let newValue {
+                    mountTool(newValue)
+                } else if runningTool != nil {
+                    closeTool()
+                }
             }
         )
     }
@@ -1381,8 +1590,12 @@ private struct CommunityShellView: View {
                 repository: repository,
                 appIDHex: tool.appIDHex,
                 appName: tool.name,
+                communityName: community.name,
+                teardownHandle: runtimeMount.teardownHandle,
+                onOpenCommunity: model.openCommunityChooser,
                 onClose: { toolNavigation.wrappedValue = nil }
             )
+            .id(runtimeMount.id)
         } else {
             Color.clear.onAppear { closeTool() }
         }
@@ -1442,6 +1655,7 @@ private struct CommunityShellView: View {
             HomeRouteView(
                 model: model,
                 newswire: newswire,
+                nearby: nearby,
                 onPostUpdate: { openComposer(.home) },
                 onPostFirstUpdate: { openComposer(.emptyWire) },
                 composerFocus: $focusedComposerTrigger,
@@ -1453,6 +1667,7 @@ private struct CommunityShellView: View {
             PeopleView(
                 model: people,
                 onPostUpdate: { openComposer(.people) },
+                onSelectPerson: { selectedPerson = $0 },
                 composerFocus: $focusedComposerTrigger
             )
         case .nearby:
@@ -1468,10 +1683,16 @@ private struct CommunityShellView: View {
         // list therefore open a tool the same way — never a contextless cover.
         model.select(.tools)
         focus.open(toolID: cardID)
+        mountTool(app)
+    }
+
+    private func mountTool(_ app: RiotSpaceApp) {
+        runtimeMount.replace()
         runningTool = app
     }
 
     private func closeTool() {
+        runtimeMount.tearDownNow()
         _ = focus.close()
         runningTool = nil
     }
@@ -1486,6 +1707,9 @@ private struct CommunityShellView: View {
     // MARK: Community change guard
 
     private func changeRoute(to destination: RiotDestination) {
+        if ToolRoutePolicy.closesMountedToolBeforeRoute, runningTool != nil {
+            closeTool()
+        }
         model.select(destination)
     }
 
@@ -1533,6 +1757,7 @@ private struct CommunityShellView: View {
 private struct HomeRouteView: View {
     @ObservedObject var model: RiotAppModel
     @ObservedObject var newswire: NewswireSurfaceModel
+    @ObservedObject var nearby: NearbyTransportController
     let onPostUpdate: () -> Void
     let onPostFirstUpdate: () -> Void
     let composerFocus: FocusState<ComposerOrigin?>.Binding
@@ -1540,11 +1765,14 @@ private struct HomeRouteView: View {
     let alertClock: ActiveAlertsClock
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
+    @State private var didAutoSync = false
+    @State private var showSyncInfo = false
     @State private var now: Date
 
     init(
         model: RiotAppModel,
         newswire: NewswireSurfaceModel,
+        nearby: NearbyTransportController,
         onPostUpdate: @escaping () -> Void,
         onPostFirstUpdate: @escaping () -> Void,
         composerFocus: FocusState<ComposerOrigin?>.Binding,
@@ -1553,6 +1781,7 @@ private struct HomeRouteView: View {
     ) {
         _model = ObservedObject(wrappedValue: model)
         _newswire = ObservedObject(wrappedValue: newswire)
+        _nearby = ObservedObject(wrappedValue: nearby)
         self.onPostUpdate = onPostUpdate
         self.onPostFirstUpdate = onPostFirstUpdate
         self.composerFocus = composerFocus
@@ -1579,36 +1808,16 @@ private struct HomeRouteView: View {
 
     var body: some View {
         ScrollView {
+            // Home draws its blocks ONLY by walking the section model, so every
+            // block has a pinned position that a test governs. Nothing is
+            // hard-coded above this loop — a block rendered outside `sections`
+            // has no pinned position and nothing can catch it drifting to the
+            // top, which is how the "find a community over the internet"
+            // acquisition card came to outrank this community's own alerts and
+            // newswire. Adding a block to Home means adding a `Section` case.
             VStack(alignment: .leading, spacing: 16) {
-                if sections.contains(.activeAlerts) {
-                    AlertsListView(
-                        presentation: activeAlerts,
-                        displayName: { model.rendered(for: $0) }
-                    )
-                }
-                // The collective newswire — Front page, Open wire, and the
-                // always-public Editorial history — is the answer to "what is
-                // happening here?" It reads the same core projection every platform
-                // does, so a reader sees the identical front page as its peers.
-                // The offlineStale forward paths lead somewhere real: rejoin with a
-                // link (Unit 1's sheet) or sync with a peer (the existing Nearby
-                // screen) — never a dead no-op button and never a silent retry loop.
-                if sections.contains(.post) {
-                    Button("Post an update", action: onPostUpdate)
-                        .buttonStyle(.riotPrimary)
-                        .frame(minHeight: 44)
-                        .focused(composerFocus, equals: .home)
-                        .accessibilityIdentifier("home-post-update")
-                }
-                NewswireSurfaceView(
-                    model: newswire,
-                    onPostUpdate: onPostFirstUpdate,
-                    onSyncWithPeer: { model.select(.nearby) },
-                    onRejoinWithLink: { showRejoinSheet = true },
-                    composerFocus: composerFocus
-                )
-                if sections.contains(.tools) {
-                    shortcutsCard
+                ForEach(sections, id: \.self) { section in
+                    sectionView(section)
                 }
             }
             .padding(20)
@@ -1616,7 +1825,10 @@ private struct HomeRouteView: View {
         // The persistent top bar already names the community; Home names the
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
-        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .riotHeader(
+            eyebrow: HomeHeaderTitle.eyebrow,
+            HomeHeaderTitle.title(forCommunityNamed: model.space?.title ?? "")
+        ) { homeSyncChip }
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
         }
@@ -1628,6 +1840,151 @@ private struct HomeRouteView: View {
                     clock: alertClock
                 )
             } catch {}
+        }
+        // Auto-populate this community once on first appearance — the behavior the
+        // old top card carried via autoStart, now decoupled from any heavy UI.
+        .task {
+            guard !didAutoSync, model.relaySyncResult == nil, !model.isRelaySyncing else { return }
+            didAutoSync = true
+            await model.syncFromRelay()
+        }
+    }
+
+    private var activeNamespace: String { model.space?.namespaceID ?? "" }
+
+    /// "Synced 2m ago" / "Syncing…" — the current community's own heartbeat,
+    /// glanceable at the top of Home instead of a full connect card.
+    private var syncStatusText: String {
+        if model.isRelaySyncing { return "Syncing…" }
+        if let text = model.lastSyncedText(for: activeNamespace) { return text }
+        if let row = model.communities.first(where: { $0.namespaceID == activeNamespace }) {
+            return row.syncFreshness
+        }
+        return "Synced"
+    }
+
+    /// A small sync chip in the header's top-right — tap for how syncing works
+    /// and where this community can reach others.
+    @ViewBuilder private var homeSyncChip: some View {
+        Button { showSyncInfo = true } label: {
+            HStack(spacing: 5) {
+                if model.isRelaySyncing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle().fill(RiotTheme.accent(for: colorScheme)).frame(width: 6, height: 6)
+                }
+                Text(syncStatusText)
+                    .font(.riot(.mono, size: 10, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+        }
+        .buttonStyle(.plain)
+        .help("How syncing works")
+        .accessibilityIdentifier("home-sync-status")
+        .popover(isPresented: $showSyncInfo, arrowEdge: .top) { syncInfoPopover }
+    }
+
+    /// Plain-language nearby state for the sync popover.
+    private var nearbyPhrase: String {
+        switch nearby.state {
+        case .idle: return "Not searching right now"
+        case .connecting, .gettingLatest: return "Connecting to someone nearby…"
+        case .preview: return "Someone nearby has updates to share"
+        case .caughtUp, .alreadyCurrent: return "In sync with a nearby phone"
+        case .outOfRange: return "A phone just went out of range"
+        case .failed: return "Couldn't connect — try again"
+        default: return "Looking for people nearby…"
+        }
+    }
+
+    /// "How does this stay in sync?" — the honest answer, with where it can
+    /// reach others right now (internet relay + people nearby) and the actions
+    /// to do either. Nothing's lost offline; it catches up on reconnect.
+    @ViewBuilder private var syncInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Staying in sync")
+                .font(.riotSerif(size: 20, relativeTo: .title3))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            Text("This community stays current whenever it can reach others — over the internet, or people right next to you. Nothing's lost: offline changes catch up when you reconnect.")
+                .font(.riot(.body, size: 13, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "globe")
+                    .foregroundStyle(RiotTheme.accent(for: colorScheme))
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Over the internet").font(.system(size: 13, weight: .semibold))
+                    Text(model.isRelaySyncing ? "Syncing now…" : (model.lastSyncedText(for: activeNamespace) ?? "Not synced yet"))
+                        .font(.riot(.mono, size: 11, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                Spacer(minLength: 8)
+                if model.isRelaySyncing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Sync now") { Task { await model.syncFromRelay() } }
+                        .buttonStyle(.riotSecondary)
+                }
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(RiotTheme.accent(for: colorScheme))
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("People nearby").font(.system(size: 13, weight: .semibold))
+                    Text(nearbyPhrase)
+                        .font(.riot(.mono, size: 11, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                Spacer(minLength: 8)
+                Button("Open") {
+                    showSyncInfo = false
+                    model.select(.nearby)
+                }
+                .buttonStyle(.riotSecondary)
+            }
+        }
+        .padding(18)
+        .frame(width: 320)
+        .background(RiotTheme.paper(for: colorScheme))
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: HomePresentation.Section) -> some View {
+        switch section {
+        case .activeAlerts:
+            AlertsListView(
+                presentation: activeAlerts,
+                displayName: { model.rendered(for: $0) }
+            )
+        case .post:
+            Button("Post an update", action: onPostUpdate)
+                .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
+                .focused(composerFocus, equals: .home)
+                .accessibilityIdentifier("home-post-update")
+        case .newswire:
+            // The collective newswire — Front page, Open wire, and the
+            // always-public Editorial history — is the answer to "what is
+            // happening here?" It reads the same core projection every platform
+            // does, so a reader sees the identical front page as its peers.
+            // The offlineStale forward paths lead somewhere real: rejoin with a
+            // link (Unit 1's sheet) or sync with a peer (the existing Nearby
+            // screen) — never a dead no-op button and never a silent retry loop.
+            NewswireSurfaceView(
+                model: newswire,
+                onPostUpdate: onPostFirstUpdate,
+                onSyncWithPeer: { model.select(.nearby) },
+                onRejoinWithLink: { showRejoinSheet = true },
+                composerFocus: composerFocus
+            )
+        case .tools:
+            shortcutsCard
         }
     }
 
@@ -1857,6 +2214,13 @@ private struct CommunitySettingsSheet: View {
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
+
+                // The discoverable route to the wipe. The triple-tap on the
+                // header is for speed under pressure; this is so the affordance
+                // can be FOUND at all — one nobody knows about protects nobody.
+                if let wipe = model.emergencyWipe {
+                    EmergencyWipeButton(controller: wipe)
+                }
 
                 Button("Done", action: onClose)
                     .buttonStyle(.riotSecondary)
@@ -2183,6 +2547,10 @@ private struct ConnectionStatusView: View {
                 RiotBadge(nearby.state.message, stamped: true)
                 if nearby.permissionDenied { permissionRecoveryCard }
                 connectedCard
+                // The non-local transport: the anchor relay. Nearby (below) is
+                // BLE/LAN; the relay reaches communities over the internet by the
+                // relay's NodeId (no IP). Both live on the Transport screen.
+                AnchorRelaySyncCard(model: model)
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
                         Text(NearbyStrings.deviceSummary)

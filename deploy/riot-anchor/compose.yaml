@@ -1,0 +1,27 @@
+# deploy/riot-anchor/compose.yaml — one public Riot anchor daemon.
+#
+#   cp riot-anchor.example.env riot-anchor.env    # fill in the secrets
+#   docker compose up -d --build
+#
+# The database path is the --db CLI flag (see command:), NOT an env var —
+# crates/riot-anchor/src/config.rs is the configuration authority.
+services:
+  riot-anchor:
+    build:
+      context: ../..
+      dockerfile: deploy/riot-anchor/Dockerfile
+    restart: unless-stopped
+    # `docker compose stop`/`restart` sends SIGTERM; the daemon catches it and
+    # runs the graceful path (relinquish the deployment lease in place + close
+    # the SQLite writer) so the next start is not refused `LeaseHeld`. Give that
+    # a comfortable window before Docker escalates to SIGKILL (default 10s).
+    stop_grace_period: 30s
+    env_file: riot-anchor.env
+    command: ["--db", "/var/lib/riot-anchor/anchor.sqlite3"]
+    volumes:
+      - anchor-db:/var/lib/riot-anchor
+    # iroh QUIC + hole punching want direct UDP; host networking is the
+    # simplest correct posture for a public anchor.
+    network_mode: host
+volumes:
+  anchor-db:

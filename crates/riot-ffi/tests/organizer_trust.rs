@@ -118,7 +118,7 @@ fn open_legacy_profile() -> Arc<MobileProfile> {
     );
     let key = [7u8; 32];
     let sealed = author.seal_identity(&key).expect("seal");
-    riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed).expect("open legacy")
+    riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed, None).expect("open legacy")
 }
 
 /// The exact bug rabble hit: he tapped "Let everyone here use this" on a space he
@@ -228,7 +228,7 @@ fn an_organizer_survives_the_relaunch_restore_path() {
     // space restored the ONLY way ProfileRepository restores one — join_public_space,
     // for a space it CREATED just the same as for one it joined.
     let relaunched =
-        riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed).expect("reopen");
+        riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed, None).expect("reopen");
     relaunched
         .join_public_space(space, Vec::new())
         .expect("restore own space");

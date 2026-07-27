@@ -1,0 +1,13 @@
+# BuildKit per-Dockerfile ignore (docker >= 23 with BuildKit reads
+# `<Dockerfile>.dockerignore` next to the -f Dockerfile). The build needs the
+# workspace manifests, Cargo.lock, rust-toolchain.toml, and crates/ — keep the
+# multi-gigabyte build artifacts and the app/marketing trees out of the context.
+target
+.git
+node_modules
+apps
+coverage
+marketing
+public
+docs
+.beads

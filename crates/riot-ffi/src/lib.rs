@@ -10,6 +10,8 @@ mod demo_ffi;
 mod logging;
 mod mobile_api;
 mod mobile_state;
+#[cfg(feature = "net")]
+pub mod net;
 mod newswire_ffi;
 mod profile_ffi;
 mod site_ffi;

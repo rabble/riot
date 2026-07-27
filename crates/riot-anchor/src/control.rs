@@ -1,8 +1,9 @@
 //! The `riot/anchor/1` control admission service.
 //!
-//! This is the ordered front door for the four WU-014 control operations —
-//! `Describe`, `GetWorkChallenge`, `PrepareHost`, and `GetOperation` — over the
-//! durable [`AnchorRepository`]. It implements the design's exhaustive admission
+//! This is the ordered front door for the WU-014 control operations —
+//! `Describe`, `GetWorkChallenge`, `PrepareHost`, and `GetOperation` — plus the
+//! `CommitHost` dispatch into the composite hosting service, over the durable
+//! [`AnchorRepository`]. It implements the design's exhaustive admission
 //! ordering:
 //!
 //! ```text
@@ -32,6 +33,9 @@ use riot_anchor_protocol::records::{
     IDEMPOTENCY_KEY_BYTES,
 };
 
+use crate::hosting::{
+    no_failpoint, CommitError, CommitHostContext, CommitHostService, TicketManifestAuthority,
+};
 use crate::idempotency::{
     classify, AdmissionLookup, PREPARED_RETENTION_EXTRA_SECS, RESULT_CLASS_ORDINARY,
 };
@@ -140,6 +144,7 @@ pub trait AdmissionPolicy {
         &self,
         request: &PrepareHostV1,
         observed_at: u64,
+        highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal>;
 
     /// The capacity gate (`admission_busy` / `admission_over_quota`). Runs after
@@ -170,33 +175,115 @@ pub struct PreparePlan {
     pub base_generation: u64,
 }
 
+/// The default receipt retention horizon (seconds past commit time) stamped
+/// into hosting receipts until `assemble_service` threads the deployment's own.
+pub const DEFAULT_REPORTED_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
+
 /// The `riot/anchor/1` control admission service.
 pub struct AnchorControlService<P: AdmissionPolicy, S: OperatorSigner> {
     context: AnchorControlContext,
     policy: P,
     signer: S,
     token_ring: TokenSecretRing,
+    /// The composite `CommitHost` service this control plane dispatches into.
+    /// Concrete on the production [`TicketManifestAuthority`]: the manifest
+    /// authority is store-derived, never pluggable at the control layer.
+    hosting: CommitHostService<TicketManifestAuthority, S>,
 }
 
 impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
-    /// Construct a control service.
+    /// Construct a control service. The signer is cloned into the embedded
+    /// Commit host service so both stamp the same operator identity.
     pub fn new(
         context: AnchorControlContext,
         policy: P,
         signer: S,
         token_ring: TokenSecretRing,
-    ) -> Self {
+    ) -> Self
+    where
+        S: Clone,
+    {
+        let limit_profile_digest = context
+            .limit_profile
+            .limit_profile_digest()
+            .expect("limit profile digests");
+        let hosting = CommitHostService::new(
+            CommitHostContext {
+                anchor_id: context.anchor_id,
+                operator_key_id: context.operator_key_id,
+                descriptor_epoch: context.descriptor_epoch,
+                descriptor_digest: context.descriptor_digest,
+                limit_profile_digest,
+                reported_retention_secs: DEFAULT_REPORTED_RETENTION_SECS,
+            },
+            TicketManifestAuthority,
+            signer.clone(),
+        );
         Self {
             context,
             policy,
             signer,
             token_ring,
+            hosting,
         }
+    }
+
+    /// Adopt the deployment's reported retention horizon for hosting receipts
+    /// (`assemble_service` threads this).
+    pub fn set_reported_retention(&mut self, reported_retention_secs: u64) {
+        self.hosting.set_reported_retention(reported_retention_secs);
     }
 
     /// The token secret ring (for rotation between operations).
     pub fn token_ring_mut(&mut self) -> &mut TokenSecretRing {
         &mut self.token_ring
+    }
+
+    /// The token secret ring, read-only (`sync/2` sessions clone it).
+    #[must_use]
+    pub fn token_ring(&self) -> &TokenSecretRing {
+        &self.token_ring
+    }
+
+    /// The operator-signed descriptor currently served by `Describe`.
+    #[must_use]
+    pub fn descriptor(&self) -> &DescriptorEnvelopeV1 {
+        &self.context.descriptor
+    }
+
+    /// Install the descriptor recovered from the repository after validating
+    /// that it is the same anchor/operator/endpoint identity and is currently
+    /// usable. Persisted canonical bytes win over freshly resolved metadata
+    /// until explicit descriptor rotation is implemented.
+    pub fn install_persisted_descriptor(
+        &mut self,
+        descriptor: DescriptorEnvelopeV1,
+        now: u64,
+    ) -> Result<(), CodecError> {
+        let body = &descriptor.body;
+        let proposed_endpoint = self.context.descriptor.body.current_iroh_endpoint_id;
+        if body.anchor_id != self.context.anchor_id
+            || body.current_operator_key_id != self.context.operator_key_id
+            || body.current_operator_verification_key.public_key != self.context.operator_public_key
+            || body.current_iroh_endpoint_id != proposed_endpoint
+            || body.recomputed_anchor_id() != body.anchor_id
+            || body.issued_at >= body.expires_at
+            || now < body.issued_at
+            || now >= body.expires_at
+            || descriptor.verify_current().is_err()
+        {
+            return Err(CodecError::NonCanonical);
+        }
+        let digest = descriptor.descriptor_digest()?;
+        self.context.descriptor_epoch = body.descriptor_epoch;
+        self.context.descriptor_digest = digest;
+        self.context.descriptor = descriptor;
+        // Descriptor-epoch coherence: the Commit host service stamps these
+        // coordinates into every receipt, so it must adopt the persisted
+        // descriptor too — stale coordinates would misbind the receipts.
+        self.hosting
+            .set_descriptor(self.context.descriptor_epoch, digest);
+        Ok(())
     }
 
     /// Handle one canonical control frame. `entropy` yields fresh 256-bit
@@ -253,6 +340,20 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
                     entropy,
                 )?))
             }
+            ControlOperation::CommitHost(body) => {
+                // Same pre-claim digest step as PrepareHost; idempotency,
+                // transaction boundaries, and the closed refusal dispositions
+                // all live inside the composite Commit service.
+                let control_request_digest = request.operation.control_request_digest()?;
+                Ok(ControlHandling::Responded(self.handle_commit_host(
+                    repo,
+                    &request.idempotency_key,
+                    body,
+                    &control_request_digest,
+                    now,
+                    entropy,
+                )?))
+            }
             ControlOperation::GetOperation(body) => Ok(ControlHandling::Responded(
                 self.handle_get_operation(repo, body, now)?,
             )),
@@ -260,6 +361,37 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
                 ProtocolFailure::Unsupported,
             )),
         }
+    }
+
+    /// Dispatch one `CommitHost` into the composite hosting service, mapping its
+    /// fault surface onto [`ControlError`]. A malformed stored plan fails closed
+    /// as a codec fault; the production failpoint hook never trips.
+    fn handle_commit_host(
+        &self,
+        repo: &mut AnchorRepository,
+        idempotency_key: &[u8; IDEMPOTENCY_KEY_BYTES],
+        body: &riot_anchor_protocol::control::CommitHostV1,
+        control_request_digest: &[u8; 32],
+        now: u64,
+        entropy: &mut dyn FnMut() -> [u8; 32],
+    ) -> Result<ControlResponseV1, ControlError> {
+        self.hosting
+            .commit(
+                repo,
+                idempotency_key,
+                body,
+                control_request_digest,
+                now,
+                entropy,
+                &mut no_failpoint,
+            )
+            .map_err(|error| match error {
+                CommitError::Repository(error) => ControlError::Repository(error),
+                CommitError::Codec(error) => ControlError::Codec(error),
+                CommitError::MalformedPlan | CommitError::Failpoint(_) => {
+                    ControlError::Codec(CodecError::NonCanonical)
+                }
+            })
     }
 
     fn refuse(kind: ControlOperationKind, refusal: ControlRefusal) -> ControlResponseV1 {
@@ -347,7 +479,12 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
 
         // ORDER STEP 5a: authority (version/transport/profile/source-rate/
         // headroom/authority). A refusal here is pre-claim → roll back, no row.
-        let plan = match self.policy.authorize_prepare_host(request, now) {
+        let ticket_root = request.root_signed_ticket_core.core.root_id;
+        let highest_transport_epoch = transaction.highest_ticket_transport_epoch(&ticket_root)?;
+        let plan = match self
+            .policy
+            .authorize_prepare_host(request, now, highest_transport_epoch)
+        {
             Ok(plan) => plan,
             Err(refusal) => {
                 drop(transaction);
@@ -436,6 +573,14 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
             retention_deadline,
             prepare_response_bytes: prepare_response_bytes.clone(),
         })?;
+        // Persist the exact admitted ticket envelope on the operation row —
+        // `CommitHostV1` carries no ticket, so this is the composite Commit's
+        // ONLY ticket source (re-accepting one at commit would allow ticket
+        // substitution).
+        transaction.store_operation_ticket(
+            &operation_id,
+            &request.root_signed_ticket_core.encode_canonical()?,
+        )?;
         transaction.claim_idempotency(
             control_request_digest,
             idempotency_key,
@@ -445,6 +590,10 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
             None,
             now,
             retention_deadline,
+        )?;
+        transaction.advance_ticket_transport_epoch(
+            &ticket_root,
+            request.root_signed_ticket_core.core.transport_epoch,
         )?;
         transaction.commit()?;
 
