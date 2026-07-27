@@ -326,7 +326,8 @@ pub fn create_signed_news_post(
 /// the caller can present those exact bytes for review. `sign_prepared_news_post`
 /// signs the RETAINED bytes with the RETAINED snapshot — it never re-encodes
 /// or re-reads the clock — so what was reviewed is byte-identical to what is
-/// signed. A prepared post is bound to the author that prepared it; any other
+/// signed. A prepared post is bound to the preparing author's subspace
+/// (keypair); any other
 /// author is rejected with `NewswireError::AuthorityInvalid`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedNewsPost {
