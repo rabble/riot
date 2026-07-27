@@ -1395,6 +1395,6 @@ mod tests {
         let InspectOutcome::Preview(preview) = outcome else {
             panic!("expected InspectOutcome::Preview");
         };
-        assert_eq!(preview.eligible, 1);
+        assert_eq!(preview.eligible_count().unwrap(), 1);
     }
 }
