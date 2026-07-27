@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 
 // MARK: - Editorial action kind (app-side mirror)
@@ -862,10 +863,20 @@ public enum EditorialSignOutcome: Equatable, Sendable {
 ///      what the UI showed. A failed sign preserves the draft.
 @MainActor
 public final class NewswireSurfaceModel: ObservableObject {
+    /// The subsystem every Riot log shares, matching the FFI `Logger`
+    /// instances, so Console.app filters by a single predicate.
+    private static let subsystem = "net.protest.riot"
+    private static let logger = Logger(subsystem: subsystem, category: "newswire")
+
     @Published public private(set) var wire: NewswireWireState
     @Published public private(set) var history: [EditorialHistoryRow]
     /// The last sign outcome, so the view can show Pending / an error inline.
     @Published public private(set) var lastOutcome: EditorialSignOutcome?
+    /// Fired with a one-card summary whenever a reply/reaction/editorial action
+    /// completes (posted or rejected). The host forwards it to
+    /// `RiotAppModel.recordReplyDiagnostic(_:)` for the Diagnostics panel. The
+    /// detailed failure cause is in the unified log via Rust `tracing`.
+    public var onReplyDiagnostic: ((ReplyDiagnosticSummary) -> Void)?
     /// The current editorial-action draft. Preserved verbatim across a rejected
     /// sign so a person never loses their words.
     @Published public var draft: EditorialActionDraft
@@ -1023,8 +1034,14 @@ public final class NewswireSurfaceModel: ObservableObject {
                 language: language
             )
             load()
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Reply", errorCode: nil))
             return .posted(entryID: record.entryId)
         } catch {
+            // The precise NewswireError variant is already in the unified log
+            // via Rust tracing; capture the coarse code for the Diagnostics card.
+            let code = Self.coarseErrorCode(for: error)
+            Self.logger.error("newswire reply rejected: \(code ?? "unknown", privacy: .public)")
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Reply", errorCode: code))
             return .rejected
         }
     }
@@ -1362,8 +1379,12 @@ public final class NewswireSurfaceModel: ObservableObject {
                 active: nowActive
             )
             load()
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Reaction", errorCode: nil))
             return nowActive ? .reacted : .retracted
         } catch {
+            let code = Self.coarseErrorCode(for: error)
+            Self.logger.error("newswire reaction rejected: \(code ?? "unknown", privacy: .public)")
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Reaction", errorCode: code))
             return .rejected
         }
     }
@@ -1558,14 +1579,26 @@ public final class NewswireSurfaceModel: ObservableObject {
             let outcome = EditorialSignOutcome.signed(entryID: record.entryId)
             lastOutcome = outcome
             load()
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Editorial", errorCode: nil))
             return outcome
         } catch {
             // Core refused (roster / store / clock). Preserve the draft verbatim —
             // the person loses nothing — and do not pretend anything changed.
+            let code = Self.coarseErrorCode(for: error)
+            Self.logger.error("newswire editorial action rejected: \(code ?? "unknown", privacy: .public)")
+            onReplyDiagnostic?(ReplyDiagnosticSummary(action: "Editorial", errorCode: code))
             let outcome = EditorialSignOutcome.rejected
             lastOutcome = outcome
             return outcome
         }
+    }
+
+    /// Extracts the coarse `MobileError` code from a thrown error, when the
+    /// error is the FFI type. Returns `nil` for non-FFI errors so the
+    /// diagnostics card shows "unknown" rather than a misleading code. The
+    /// precise variant is in the unified log via Rust `tracing`.
+    private static func coarseErrorCode(for error: Error) -> String? {
+        (error as? MobileError).map { String(describing: $0) }
     }
 }
 

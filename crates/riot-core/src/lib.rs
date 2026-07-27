@@ -11,6 +11,10 @@ pub mod coordinate;
 #[cfg(feature = "conformance")]
 pub mod demo_fixture;
 pub mod governance;
+/// Earthstar-style self-certifying identity handles (`@author.<suffix>`,
+/// `+space.<suffix>` / `-space.<suffix>`). App-layer display/sharing
+/// convention only; protocol identity lives in [`willow::identity`].
+pub mod identity;
 pub mod import;
 pub mod meadowcap;
 pub mod model;
