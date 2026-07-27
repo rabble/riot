@@ -15,7 +15,7 @@ test("buildFontsConf writes a hermetic fontconfig pointing at the checked-in fon
   const result = await buildFontsConf({ fontsDirectory, workDirectory: root, fs: realFs });
   const conf = await realFs.readFile(result.confPath, "utf8");
   assert.match(conf, /<dir>.*Resources\/Fonts<\/dir>/);
-  assert.match(conf, /<?xml|!DOCTYPE fontconfig/);
+  assert.match(conf, /<\?xml/);
   assert.deepEqual(Object.keys(result.env).sort(), [...Object.keys(RENDER_ENVIRONMENT)].sort());
   assert.equal(result.env.FONTCONFIG_PATH, result.confDirectory);
 });
