@@ -1319,6 +1319,10 @@ mod tests {
 
         assert_eq!(&record.signed.payload_bytes, prepared.payload_bytes());
         assert_eq!(record.snapshot, prepared.snapshot());
+        assert_eq!(
+            crate::willow::entry_timestamp_micros(&record.signed.entry_bytes).unwrap(),
+            prepared.snapshot().tai_j2000_micros
+        );
     }
 
     #[test]
@@ -1375,26 +1379,22 @@ mod tests {
         let organizer = generate_space_organizer_author().unwrap();
         let namespace_id = *organizer.namespace_id().as_bytes();
         let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
-        let (descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
 
         let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
         let record = sign_prepared_news_post(&editor, &prepared).unwrap();
 
-        let descriptor_bundle = encode_bundle(&[descriptor_record.signed.clone()]).unwrap();
+        // Post admission is self-contained: no descriptor needs to be present
+        // in the store for the post to be eligible.
         let post_bundle = encode_bundle(&[record.signed.clone()]).unwrap();
         let session = RiotSession::open().unwrap();
         let store = session.create_store().unwrap();
-        assert!(matches!(
-            store
-                .inspect(&descriptor_bundle, ImportContext::new("test"))
-                .unwrap(),
-            InspectOutcome::Preview(_)
-        ));
-        assert!(matches!(
-            store
-                .inspect(&post_bundle, ImportContext::new("test"))
-                .unwrap(),
-            InspectOutcome::Preview(_)
-        ));
+        let outcome = store
+            .inspect(&post_bundle, ImportContext::new("test"))
+            .unwrap();
+        let InspectOutcome::Preview(preview) = outcome else {
+            panic!("expected InspectOutcome::Preview");
+        };
+        assert_eq!(preview.eligible, 1);
     }
 }
