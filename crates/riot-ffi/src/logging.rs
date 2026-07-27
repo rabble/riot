@@ -46,6 +46,7 @@ impl LogLevel {
 /// The subsystem every Riot log shares. Matches `PRODUCT_BUNDLE_IDENTIFIER`
 /// and the single existing `Logger(subsystem:category:)` in
 /// `WrappingKeyStore.swift`, so Console.app filters by one predicate.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const SUBSYSTEM: &str = "net.protest.riot";
 
 static INIT: Once = Once::new();
@@ -100,7 +101,7 @@ fn install_oslog(filter: tracing_subscriber::EnvFilter) {
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn install_stderr(filter: tracing_subscriber::EnvFilter) {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{fmt, layer::SubscriberExt};
 
     let subscriber = tracing_subscriber::Registry::default()
         .with(filter)
