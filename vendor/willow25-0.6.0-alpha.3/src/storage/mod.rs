@@ -18,7 +18,7 @@ mod memory_store;
 #[cfg(feature = "std")]
 pub use memory_store::*;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "persistent-storage"))]
 mod persistent_store;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "persistent-storage"))]
 pub use persistent_store::*;

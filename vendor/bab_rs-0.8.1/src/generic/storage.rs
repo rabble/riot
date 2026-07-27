@@ -11,6 +11,7 @@
 pub mod storage_backend;
 pub use storage_backend::StorageBackend;
 
+#[cfg(feature = "storage-fs")]
 pub mod backend_filesystem;
 
 pub mod backend_memory;

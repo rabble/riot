@@ -19,7 +19,10 @@ conformance = ["dep:serde_json"]
 # The durable SQLite store. Default-on, so every existing build is unchanged.
 # Disable (`--no-default-features`) to compile the verify+project core for
 # wasm32, where SQLite's C library cannot build — the in-memory store remains.
-default = ["sqlite"]
+default = ["sqlite", "persistent-storage"]
+# willow25's persistent store pulls fjall + async-fs + bab_rs/storage-fs.
+# Default-on for native; wasm builds (`--no-default-features`) exclude it.
+persistent-storage = ["willow25/persistent-storage"]
 sqlite = ["dep:rusqlite"]
 
 [dependencies]

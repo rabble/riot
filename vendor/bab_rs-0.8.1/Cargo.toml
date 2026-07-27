@@ -37,8 +37,9 @@ dev = [
     "std",
 ]
 std = []
-storage = [
-    "std",
+storage = ["std"]
+storage-fs = [
+    "storage",
     "dep:async-fs",
     "dep:futures-lite",
 ]
