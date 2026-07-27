@@ -3,6 +3,7 @@ package org.riot.evidence
 import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 
 enum class ReleaseFixtureContractError {
     DIGEST_MISMATCH,
@@ -112,19 +113,28 @@ data class ReleaseFixture(
         }
 
         internal fun validateSemantics(bytes: ByteArray): ReleaseFixture {
-            val root = try {
-                JSONObject(bytes.toString(Charsets.UTF_8))
+            val tokener = JSONTokener(bytes.toString(Charsets.UTF_8))
+            val parsed = try {
+                tokener.nextValue()
             } catch (_: Exception) {
                 fail(ReleaseFixtureContractError.MALFORMED_JSON)
             }
+            if (parsed !is JSONObject) {
+                fail(ReleaseFixtureContractError.MALFORMED_JSON)
+            }
+            // JSONTokener stops after the root object; only trailing whitespace
+            // (for example the final LF) may follow, anything else is malformed.
+            while (tokener.more()) {
+                if (!tokener.next().isWhitespace()) {
+                    fail(ReleaseFixtureContractError.MALFORMED_JSON)
+                }
+            }
+            val root = parsed
             rejectProhibitedData(root)
             requireContract(root.keysSet() == ROOT_KEYS, ReleaseFixtureContractError.INVALID_ROOT_KEYS)
 
-            val identifiersObject = try {
-                root.getJSONObject("identifiers")
-            } catch (_: Exception) {
-                fail(ReleaseFixtureContractError.MALFORMED_JSON)
-            }
+            val identifiersObject = root.optJSONObject("identifiers")
+                ?: fail(ReleaseFixtureContractError.INVALID_IDENTIFIER_KEYS)
             requireContract(
                 identifiersObject.keysSet() == IDENTIFIER_KEYS,
                 ReleaseFixtureContractError.INVALID_IDENTIFIER_KEYS,
@@ -175,7 +185,7 @@ data class ReleaseFixture(
                 }
             }
             return ReleaseFixture(
-                schemaVersion = root.getInt("schemaVersion"),
+                schemaVersion = exactSchemaVersion(root),
                 fixtureRevision = root.getString("fixtureRevision"),
                 fixtureKind = root.getString("fixtureKind"),
                 fixedClock = root.getString("fixedClock"),
@@ -186,6 +196,20 @@ data class ReleaseFixture(
                 ),
                 narrativeStates = states,
             )
+        }
+
+        // org.json getInt truncates 1.9 to 1; Swift JSONDecoder rejects any
+        // non-integral or out-of-range schemaVersion as malformed. Match that
+        // exactly: only an integral number representable as Int is accepted.
+        private fun exactSchemaVersion(root: JSONObject): Int = when (val raw = root.get("schemaVersion")) {
+            is Int -> raw
+            is Long -> if (raw.toInt().toLong() == raw) raw.toInt() else {
+                fail(ReleaseFixtureContractError.MALFORMED_JSON)
+            }
+            is Double -> if (raw % 1.0 == 0.0 && raw.toInt().toDouble() == raw) raw.toInt() else {
+                fail(ReleaseFixtureContractError.MALFORMED_JSON)
+            }
+            else -> fail(ReleaseFixtureContractError.MALFORMED_JSON)
         }
 
         private fun ReleaseFixture.validate() {

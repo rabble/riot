@@ -1,0 +1,3 @@
+# Fixture JSON bytes are SHA-256 pinned in Swift and Kotlin loaders; a CRLF
+# checkout would corrupt the pinned digest. Force LF for all fixture JSON.
+fixtures/**/*.json text eol=lf

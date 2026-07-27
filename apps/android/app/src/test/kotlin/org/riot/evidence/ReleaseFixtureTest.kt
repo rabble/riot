@@ -107,6 +107,19 @@ class ReleaseFixtureTest {
             states.put(0, states.getJSONObject(1))
             states.put(1, first)
         }
+        // Swift JSONDecoder rejects a fractional schemaVersion as malformed; the
+        // Kotlin loader must not silently truncate it to a passing integer.
+        assertMutation(ReleaseFixtureContractError.MALFORMED_JSON) {
+            it.put("schemaVersion", 1.9)
+        }
+        // Swift maps a non-object identifiers value to invalidIdentifierKeys.
+        assertMutation(ReleaseFixtureContractError.INVALID_IDENTIFIER_KEYS) {
+            it.put("identifiers", "not-an-object")
+        }
+        // Swift JSONSerialization rejects trailing content after the root object.
+        assertFailure(ReleaseFixtureContractError.MALFORMED_JSON) {
+            ReleaseFixture.validateSemantics(fixtureBytes() + "garbage".toByteArray())
+        }
     }
 
     @Test
