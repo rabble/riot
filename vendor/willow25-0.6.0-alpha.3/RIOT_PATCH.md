@@ -9,7 +9,10 @@ plus the minimal feature-gate patch described below.
 - Source: `registry+https://github.com/rust-lang/crates.io-index`
 - crates.io sha256 (verified against `Cargo.lock` before vendoring): `6477a05fe4a055b0cb95d3eec60e10e5753551bc1d8fb67cb7642b61e6caf377`
 - Vendored: 2026-07-27
-- License: upstream license files in this directory, retained unmodified
+- License: `MIT OR Apache-2.0` per `Cargo.toml:25`; the upstream tarball ships
+  no standalone license files (verified against the registry source), so none
+  are present here. (`vendor/bab_rs-0.8.1` does ship `LICENSE-APACHE` /
+  `LICENSE-MIT`, retained unmodified.)
 
 ## Patch
 
