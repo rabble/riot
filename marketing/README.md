@@ -17,6 +17,15 @@ backend, analytics, remote fonts, or third-party runtime requests.
   Honest about the fact that there is no chat room or mailing list yet.
 - `/protocols/` — a source-backed field guide comparing Riot and Willow with
   adjacent social, relay, federation, nearby-messaging, and local-first systems.
+- `/support/` — the public support and reporting channel: named operator
+  contact, public-channel response commitments, and an honest list of the
+  in-app moderation controls that are not shipped yet.
+- `/accessibility/` — early-access accessibility commitments and the exact
+  per-device rehearsal scope they rest on. Commitments under test, not audit
+  results.
+
+Also live but not listed above: `/why-riot/` (paired story at three depths),
+`/guide/` (task manual), and `/releases/` (get the app).
 
 Every page's footer links to every other page, so a visitor on any route can
 reach all of them. The homepage and protocol page keep their existing top-nav
@@ -50,6 +59,11 @@ Edit the source files first:
 - `open-source/index.html`
 - `community/index.html`
 - `protocols/index.html`
+- `support/index.html`
+- `accessibility/index.html`
+- `why-riot/index.html`
+- `guide/index.html`
+- `releases/index.html`
 - `assets/screenshots/` for the real iPhone simulator screens used in the hero
 
 Then update their byte-identical deployment mirrors:
@@ -60,6 +74,11 @@ Then update their byte-identical deployment mirrors:
 - `public/open-source/index.html`
 - `public/community/index.html`
 - `public/protocols/index.html`
+- `public/support/index.html`
+- `public/accessibility/index.html`
+- `public/why-riot/index.html`
+- `public/guide/index.html`
+- `public/releases/index.html`
 - `public/assets/screenshots/`
 
 `public/sitemap.xml` and `public/robots.txt` have no source copy — edit them

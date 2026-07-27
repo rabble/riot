@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "templateVersion": 1,
+  "locale": "en-US",
+  "appearance": "light",
+  "fonts": {
+    "directory": "apps/ios/Riot/Resources/Fonts",
+    "headline": { "family": "Anton", "file": "Anton-Regular.ttf" },
+    "label": { "family": "Space Mono", "file": "SpaceMono-Bold.ttf" },
+    "body": { "family": "Work Sans", "file": "WorkSans-Variable.ttf", "weight": 400 }
+  },
+  "colors": {
+    "ink": "#17160f",
+    "paper": "#eae6da"
+  },
+  "band": {
+    "maxFractionPortrait": 0.24,
+    "maxFractionLandscape": 0.28,
+    "safeInsetFraction": 0.05
+  },
+  "headline": {
+    "maxLines": 3,
+    "maxCodePoints": 42,
+    "minContrast": 4.5,
+    "minCapHeightPhonePx": 56,
+    "minCapHeightLargePx": 72
+  },
+  "thumbnail": {
+    "widthPx": 320,
+    "minCapHeightPx": 14
+  },
+  "frames": [
+    {
+      "stateId": "community-newswire",
+      "claimId": "follow-newswire",
+      "headline": "Your community. Your newswire.",
+      "supportingCopy": "Follow updates from a community you choose."
+    },
+    {
+      "stateId": "signed-publishing",
+      "claimId": "publish-signed",
+      "headline": "Publish signed updates from the field.",
+      "supportingCopy": "Signatures show source and integrity, not whether a claim is true."
+    },
+    {
+      "stateId": "labels-and-signatures",
+      "claimId": "read-signatures-labels",
+      "headline": "Read signatures and editorial labels.",
+      "supportingCopy": "Community editorial labels are community signals, not independent factual verification."
+    },
+    {
+      "stateId": "community-tools",
+      "claimId": "community-tools",
+      "headline": "Carry useful tools with the community.",
+      "supportingCopy": "Open a shared checklist alongside community updates."
+    },
+    {
+      "stateId": "nearby-exchange",
+      "claimId": "nearby-exchange",
+      "headline": "Exchange updates nearby.",
+      "supportingCopy": "Experimental: exchange updates directly with a nearby device."
+    },
+    {
+      "stateId": "offline-copy",
+      "claimId": "offline-copy",
+      "headline": "Keep a local copy available offline.",
+      "supportingCopy": "Keep a local copy ready to read without a connection."
+    }
+  ],
+  "devices": [
+    { "id": "iphone", "width": 1320, "height": 2868, "orientation": "portrait", "nearbyVariant": true },
+    { "id": "ipad", "width": 2752, "height": 2064, "orientation": "landscape", "nearbyVariant": false },
+    { "id": "mac", "width": 2880, "height": 1800, "orientation": "landscape", "nearbyVariant": false },
+    { "id": "android-phone", "width": 1080, "height": 2400, "orientation": "portrait", "nearbyVariant": true },
+    { "id": "android-tablet", "width": 1920, "height": 1200, "orientation": "landscape", "nearbyVariant": false }
+  ]
+}

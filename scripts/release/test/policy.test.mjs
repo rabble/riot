@@ -46,7 +46,7 @@ test("real policy sources are schema-valid and truthfully not public-ready", asy
   const result = evaluatePolicy(await sources());
   assert(result.some(({ id, state }) => id === "product.identity" && state === "PASS"));
   assert(result.some(({ id, state }) => id === "policy.filtering" && state === "BLOCKED"));
-  assert(result.some(({ id, state }) => id === "url.support" && state === "BLOCKED"));
+  assert(result.some(({ id, state }) => id === "url.support" && state === "PASS"));
   assert(result.some(({ id, state }) => id === "export.classification" && state === "HUMAN ACTION"));
   assert(result.some(({ id, state }) => id === "account.agreements" && state === "HUMAN ACTION"));
   assert(result.some(({ id, state }) => id === "permission.android-internet" && state === "PASS"));
@@ -85,7 +85,7 @@ test("URL evidence is verified from injected filesystem content, not trusted sou
   const loaded = await sources();
   assert.equal(loaded._urlEvidence.privacy.state, "current");
   assert.equal(loaded._urlEvidence.marketing.state, "current");
-  assert.equal(loaded._urlEvidence.support.state, "missing");
+  assert.equal(loaded._urlEvidence.support.state, "current");
 
   const root = await mkdtemp(join(tmpdir(), "riot-url-evidence-"));
   await realFs.cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });

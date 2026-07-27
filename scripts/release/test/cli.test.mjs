@@ -14,6 +14,17 @@ const cli = join(repositoryRoot, "scripts", "release", "cli.mjs");
 async function releaseRoot() {
   const root = await mkdtemp(join(tmpdir(), "riot-release-cli-"));
   await cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });
+  // Visual generation reads the checked-in fonts and icon master.
+  await cp(
+    join(repositoryRoot, "apps", "ios", "Riot", "Resources", "Fonts"),
+    join(root, "apps", "ios", "Riot", "Resources", "Fonts"),
+    { recursive: true },
+  );
+  await cp(
+    join(repositoryRoot, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset"),
+    join(root, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset"),
+    { recursive: true },
+  );
   return root;
 }
 
@@ -84,16 +95,19 @@ test("status and status --json expose the same ordered truthful gates", async ()
   assert.equal(json.stderr, "");
 });
 
-test("generate is deterministic and creates only the eleven worksheets", async () => {
+test("generate is deterministic and creates the worksheets, metadata, and visual artifacts", async () => {
   const root = await releaseRoot();
   await rm(join(root, "release", "generated"), { recursive: true, force: true });
   const first = await run(root, ["generate"]);
-  assert.deepEqual(first, { code: 0, stdout: "generated 11 worksheets\n", stderr: "" });
+  assert.deepEqual(first, { code: 0, stdout: "generated 11 worksheets, 12 metadata artifacts, and 51 visual artifacts\n", stderr: "" });
   const before = await readFile(join(root, "release", "generated", "worksheets", "app-privacy.md"), "utf8");
+  const beforeManifest = await readFile(join(root, "release", "generated", "apple", "en-US", "manifest.json"), "utf8");
   const second = await run(root, ["generate"]);
   const after = await readFile(join(root, "release", "generated", "worksheets", "app-privacy.md"), "utf8");
+  const afterManifest = await readFile(join(root, "release", "generated", "apple", "en-US", "manifest.json"), "utf8");
   assert.equal(second.code, 0);
   assert.equal(after, before);
+  assert.equal(afterManifest, beforeManifest);
 });
 
 test("missing or malformed source fails closed without a stack trace", async () => {

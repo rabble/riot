@@ -15,7 +15,7 @@ const paths = {
 };
 // Secondary pages (source + byte-identical public mirror). Each is dependency-free
 // and reuses the protocols-page design system (system fonts, no runtime media/scripts).
-const secondaryPages = ["about", "privacy", "open-source", "community", "releases"];
+const secondaryPages = ["about", "privacy", "open-source", "community", "releases", "support", "accessibility"];
 const secondary = Object.fromEntries(
   secondaryPages.flatMap((name) => [
     [name, resolve(root, `marketing/${name}/index.html`)],
@@ -44,6 +44,7 @@ const {
   about, publicAbout, privacy, publicPrivacy,
   "open-source": openSource, publicOpenSource, community, publicCommunity,
   releases, publicReleases, whyRiot, publicWhyRiot, guide, publicGuide,
+  support, publicSupport, accessibility, publicAccessibility,
 } = await readAll(allPaths);
 // Paired explainer (#92): the iOS story/presentation sources must match the
 // five-beat copy the website claims. Read them so later assertions can pin both sides.
@@ -233,9 +234,9 @@ assert.doesNotMatch(protocols, /(?:plausible|google-analytics|googletagmanager|s
 // route can reach all the others. A page may omit its own self-link (a "Home"
 // link on the home page adds nothing). The link set is the single source of
 // truth for "all pages".
-const allSitePaths = ["/", "/why-riot/", "/guide/", "/about/", "/privacy/", "/open-source/", "/community/", "/releases/", "/protocols/"];
-const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/", releases: "/releases/", "why-riot": "/why-riot/", guide: "/guide/" };
-const pageContents = { home, protocols, about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide };
+const allSitePaths = ["/", "/why-riot/", "/guide/", "/about/", "/privacy/", "/open-source/", "/community/", "/releases/", "/protocols/", "/support/", "/accessibility/"];
+const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/", releases: "/releases/", "why-riot": "/why-riot/", guide: "/guide/", support: "/support/", accessibility: "/accessibility/" };
+const pageContents = { home, protocols, about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide, support, accessibility };
 for (const [pageName, content] of Object.entries(pageContents)) {
   for (const sitePath of allSitePaths) {
     if (sitePath === pageOwnPath[pageName]) continue;
@@ -277,7 +278,7 @@ for (const [pageName, content] of Object.entries(pageContents)) {
 // The four secondary pages follow the protocols-page rule: no runtime
 // media/scripts, no remote CSS, no analytics, and the accessibility landmarks
 // every page shares.
-for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide })) {
+for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide, support, accessibility })) {
   for (const landmark of ["<main", "<nav", "<h1", "<footer"]) {
     assert.ok(content.includes(landmark), `${pageName} page must include ${landmark}`);
   }
@@ -327,6 +328,41 @@ for (const phrase of [
 for (const platform of ["iOS", "macOS", "Android"]) {
   assert.ok(guide.includes(platform), `guide missing platform notes for ${platform}`);
 }
+
+// --- Support page: real operator contact, public-channel SLAs, honest gaps ---
+// The support page publishes the public reporting process. It must name the
+// operator contact, scope the SLA to the public channel, and disclose the
+// in-app controls that are not shipped yet — never invent controls.
+for (const phrase of [
+  "mailto:rabble@protest.net",
+  "acknowledged within 24 hours",
+  "decision within 24 hours",
+  "decision within 72 hours",
+  "public channel",
+  "not shipped yet",
+  "not in the build",
+  "Version 1.0 is an early-access release",
+]) {
+  assert.ok(support.includes(phrase), `support page missing required statement: ${phrase}`);
+}
+
+// --- Accessibility page: commitments + rehearsal scope, not audit results ---
+for (const phrase of [
+  "VoiceOver",
+  "TalkBack",
+  "keyboard",
+  "4.5:1",
+  "commitments under test, not audit results",
+  "iPhone",
+  "iPad",
+  "Android phone",
+  "Android tablet",
+  "Version 1.0 is an early-access release",
+]) {
+  assert.ok(accessibility.includes(phrase), `accessibility page missing required statement: ${phrase}`);
+}
+assert.doesNotMatch(accessibility, /VPAT(?!,)/i, "accessibility page must not claim formal conformance (VPAT mention allowed only as a negation)");
+assert.ok(accessibility.includes("not an audit result"), "accessibility page must disclaim audit status");
 
 // --- Sitemap + robots --------------------------------------------------------
 // Static crawl helpers live in the deployment mirror (no source copy; they are

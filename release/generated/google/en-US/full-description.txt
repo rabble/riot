@@ -1,0 +1,15 @@
+Community-owned news and practical tools designed to stay useful locally when networks are unreliable. Version 1.0 is an early-access release.
+
+- Follow community newswires.
+- Publish signed updates.
+- Read signatures and community editorial labels.
+- Carry community tools, including shared checklists.
+- Exchange updates nearby with other phones. Nearby exchange is experimental.
+- Keep a local copy available offline.
+
+A valid signature proves source and integrity, not truth. Editorial labels are community signals, not independent factual verification.
+
+Riot is free, with no in-app purchases. Riot is available worldwide.
+Privacy: https://riot.protest.net/privacy/
+Support: https://riot.protest.net/support/
+Releases: https://riot.protest.net/releases/

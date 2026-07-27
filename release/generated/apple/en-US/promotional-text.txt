@@ -1,0 +1,1 @@
+Community-owned news and practical tools designed to stay useful locally when networks are unreliable. Version 1.0 is an early-access release.

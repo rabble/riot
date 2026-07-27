@@ -5,12 +5,17 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { evaluateConfiguration, evaluateSnapshotFreshness } from "./configuration.mjs";
+import { evaluateMetadata, generateMetadata, loadMetadataSources } from "./metadata.mjs";
 import { evaluatePolicy, generateWorksheets, loadPolicySources } from "./policy.mjs";
 import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
+import { renderDrafts, renderIcons } from "./visual-render.mjs";
+import { validateVisuals } from "./visual-validate.mjs";
 
 const STATES = new Set(["PASS", "BLOCKED", "HUMAN ACTION"]);
 const REQUIRED_TOOLCHAINS = ["node", "npm", "rustc", "cargo", "gradle", "android-sdk", "android-ndk", "xcode", "swift", "ajv", "c8"];
 const USAGE = "usage: node scripts/release/cli.mjs <generate|status [--json]>\n";
+const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export function summarizeGates(gates) {
   for (const { state } of gates) {
@@ -118,8 +123,28 @@ export function failureGate(error, root) {
 
 async function collectGates(root) {
   try {
-    const sources = await loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs });
-    return [...evaluatePolicy(sources), ...await toolchainGates(root)];
+    const sourceDirectory = join(root, "release", "source");
+    const registry = await loadSchemaRegistry(join(root, "release", "schemas"), fs);
+    const sources = await loadPolicySources({ sourceDirectory, fs });
+    const metadataSources = await loadMetadataSources({ sourceDirectory, registry, fs });
+    const snapshot = validateSource(
+      registry,
+      "configuration-snapshot",
+      JSON.parse(await fs.readFile(join(sourceDirectory, "configuration-snapshot.json"), "utf8")),
+    );
+    return [
+      ...evaluatePolicy(sources),
+      ...evaluateMetadata(metadataSources),
+      ...evaluateConfiguration(snapshot),
+      await evaluateSnapshotFreshness({ snapshot, repositoryRoot: root, fs, sha256: sha256Hex }),
+      ...await validateVisuals({
+        visuals: metadataSources.visuals,
+        repositoryRoot: root,
+        fs,
+        sha256: sha256Hex,
+      }),
+      ...await toolchainGates(root),
+    ];
   } catch (error) {
     return [failureGate(error, root)];
   }
@@ -142,15 +167,43 @@ export async function runCli({
   }
   if (args[0] === "generate") {
     try {
-      const sources = await loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs });
+      const sha256 = sha256Hex;
+      const sourceDirectory = join(root, "release", "source");
+      const registry = await loadSchemaRegistry(join(root, "release", "schemas"), fs);
+      const sources = await loadPolicySources({ sourceDirectory, fs });
       await generateWorksheets({
         sources,
         repositoryRoot: root,
         outputDirectory: join(root, "release", "generated", "worksheets"),
         fs,
-        sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
+        sha256,
       });
-      stdout.write("generated 11 worksheets\n");
+      const metadataSources = await loadMetadataSources({ sourceDirectory, registry, fs });
+      await generateMetadata({
+        sources: metadataSources,
+        outputDirectory: join(root, "release", "generated"),
+        fs,
+        sha256,
+      });
+      const fixtureSha256 = "930a9c5aa06dea920b0502dbd72b6b2bf00d1b4cb9405b99e69e00d035640469";
+      await renderDrafts({
+        visuals: metadataSources.visuals,
+        fixtureRevision: "riot-1.0-synthetic-v1",
+        fixtureSha256,
+        fontsDirectory: join(root, "apps", "ios", "Riot", "Resources", "Fonts"),
+        outputDirectory: join(root, "release", "generated"),
+        fs,
+        sha256,
+      });
+      await renderIcons({
+        masterPath: join(root, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"),
+        outputDirectory: join(root, "release", "generated"),
+        fs,
+        sha256,
+        visuals: metadataSources.visuals,
+        fontsDirectory: join(root, "apps", "ios", "Riot", "Resources", "Fonts"),
+      });
+      stdout.write("generated 11 worksheets, 12 metadata artifacts, and 51 visual artifacts\n");
       return 0;
     } catch {
       stderr.write("release generation failed: correct the canonical source diagnostics with status\n");

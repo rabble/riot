@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/google-metadata.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "locale", "fields", "urls", "categories"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "locale": { "const": "en-US" },
+    "fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "shortDescription", "fullDescription", "releaseNotes"],
+      "properties": {
+        "title": { "const": "Riot" },
+        "shortDescription": { "type": "string", "minLength": 1 },
+        "fullDescription": { "type": "string", "minLength": 1 },
+        "releaseNotes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "urls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privacy", "support", "marketing"],
+      "properties": {
+        "privacy": { "const": "https://riot.protest.net/privacy/" },
+        "support": { "const": "https://riot.protest.net/support/" },
+        "marketing": { "const": "https://riot.protest.net/releases/" }
+      }
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

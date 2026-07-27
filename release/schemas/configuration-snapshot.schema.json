@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/configuration-snapshot.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "capturedAt", "fileHashes", "ios", "macos", "android"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "capturedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "fileHashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
+    "ios": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleId", "marketingVersion", "buildInjection", "icon", "privacyManifest"],
+      "properties": {
+        "bundleId": { "type": "string", "minLength": 1 },
+        "marketingVersion": { "type": "string", "minLength": 1 },
+        "buildInjection": { "enum": ["explicit", "commit-count"] },
+        "icon": { "enum": ["present", "missing"] },
+        "privacyManifest": { "type": "boolean" }
+      }
+    },
+    "macos": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleId", "marketingVersion", "buildInjection", "icon", "privacyManifest", "signing", "architecture"],
+      "properties": {
+        "bundleId": { "type": "string", "minLength": 1 },
+        "marketingVersion": { "type": "string", "minLength": 1 },
+        "buildInjection": { "enum": ["explicit", "commit-count"] },
+        "icon": { "enum": ["present", "missing"] },
+        "privacyManifest": { "type": "boolean" },
+        "signing": { "enum": ["distribution", "ad-hoc", "missing"] },
+        "architecture": { "enum": ["apple-silicon", "intel-claim"] }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationId", "namespace", "versionName", "versionCode", "icons", "signing"],
+      "properties": {
+        "applicationId": { "type": "string", "minLength": 1 },
+        "namespace": { "type": "string", "minLength": 1 },
+        "versionName": { "type": "string", "minLength": 1 },
+        "versionCode": { "type": "integer", "minimum": 0 },
+        "icons": { "enum": ["present", "missing"] },
+        "signing": { "enum": ["release-external", "debug", "daemon-secret", "missing"] }
+      }
+    }
+  }
+}

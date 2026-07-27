@@ -6,15 +6,19 @@ const BASE = "https://riot.protest.net/release/schemas/";
 const EXPECTED_IDS = Object.freeze({
   "accessibility.schema.json": `${BASE}accessibility.v1.json`,
   "account-gates.schema.json": `${BASE}account-gates.v1.json`,
+  "apple-metadata.schema.json": `${BASE}apple-metadata.v1.json`,
   "claims.schema.json": `${BASE}claims.v1.json`,
   "common.schema.json": `${BASE}common.v1.json`,
+  "configuration-snapshot.schema.json": `${BASE}configuration-snapshot.v1.json`,
   "export-compliance.schema.json": `${BASE}export-compliance.v1.json`,
+  "google-metadata.schema.json": `${BASE}google-metadata.v1.json`,
   "network-matrix.schema.json": `${BASE}network-matrix.v1.json`,
   "policy.schema.json": `${BASE}policy.v1.json`,
   "privacy.schema.json": `${BASE}privacy.v1.json`,
   "product.schema.json": `${BASE}product.v1.json`,
   "review-instructions.schema.json": `${BASE}review-instructions.v1.json`,
   "toolchains.schema.json": `${BASE}toolchains.v1.json`,
+  "visuals.schema.json": `${BASE}visuals.v1.json`,
 });
 
 function deepFreeze(value) {

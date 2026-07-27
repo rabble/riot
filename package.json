@@ -21,6 +21,7 @@
     "@playwright/test": "1.61.1",
     "ajv": "8.20.0",
     "c8": "11.0.0",
-    "selenium-webdriver": "4.46.0"
+    "selenium-webdriver": "4.46.0",
+    "sharp": "^0.35.3"
   }
 }
