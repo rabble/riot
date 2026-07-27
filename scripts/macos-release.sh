@@ -50,6 +50,7 @@ cd "$ROOT"
 #   error opening input file '.../build/generated/riot-ffi/riot_ffi.swift'
 # mkdir is atomic on every filesystem this runs on, so it is the lock.
 LOCK_DIR="$ROOT/build/.release-lock"
+mkdir -p "$ROOT/build"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "ERROR: another release build is already running in this checkout." >&2
   echo "       ($LOCK_DIR exists — remove it if a previous run was killed.)" >&2
