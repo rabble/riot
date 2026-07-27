@@ -54,4 +54,10 @@ pin to that release.
 
 ## Integrity manifest
 
-Same convention as `vendor/willow25-0.6.0-alpha.3/RIOT_PATCH.md`.
+Same convention as `vendor/willow25-0.6.0-alpha.3/RIOT_PATCH.md`. Regenerate
+after any deliberate change:
+
+```bash
+cd vendor/bab_rs-0.8.1
+find . -type f ! -name RIOT_INTEGRITY.sha256 ! -name RIOT_PATCH.md ! -path './target/*' -print0 | sort -z | xargs -0 shasum -a 256 > RIOT_INTEGRITY.sha256
+```
