@@ -239,13 +239,13 @@ struct AppRuntimeLaunch {
 public struct AppRuntimeView: View {
     /// Posted by refresh sources outside the page (foregrounding, and sync
     /// accept) to re-run the page's `watch` callbacks.
-    public static let dataChangedNotification = Notification.Name("RiotAppDataChanged")
+    public nonisolated static let dataChangedNotification = Notification.Name("RiotAppDataChanged")
 
     /// Posted when a running app's execution session is invalidated mid-use
     /// (trust revoked, namespace swapped, approval changed). The host closes the
     /// app to its named destination — "Return to Tools" (§4.7) — instead of
     /// leaving it looping against a dead session.
-    public static let appInvalidatedNotification = Notification.Name("RiotAppInvalidated")
+    public nonisolated static let appInvalidatedNotification = Notification.Name("RiotAppInvalidated")
 
     /// Fire the invalidation route. Called from the bridge when a read/commit
     /// fails because the session is no longer valid.
