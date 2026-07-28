@@ -1471,7 +1471,7 @@ mod tests {
 
         // Post admission is self-contained: no descriptor needs to be present
         // in the store for the post to be eligible.
-        let post_bundle = encode_bundle(&[record.signed.clone()]).unwrap();
+        let post_bundle = encode_bundle(std::slice::from_ref(&record.signed)).unwrap();
         let session = RiotSession::open().unwrap();
         let store = session.create_store().unwrap();
         let outcome = store
