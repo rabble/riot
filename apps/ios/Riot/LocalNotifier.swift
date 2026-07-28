@@ -212,7 +212,9 @@ public final class LocalNotifier: ObservableObject {
 /// Info.plist usage string (unlike camera) — only an authorization request.
 @MainActor
 final class UserNotificationScheduler: SystemNotificationScheduling {
-    func currentAuthorization() async -> NotifierAuthorization {
+    // nonisolated witnesses: UNUserNotificationCenter is thread-safe, and the
+    // Xcode 16 SDK treats the cross-actor settings read as a Sendable violation.
+    nonisolated func currentAuthorization() async -> NotifierAuthorization {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
@@ -224,7 +226,7 @@ final class UserNotificationScheduler: SystemNotificationScheduling {
         }
     }
 
-    func requestAuthorization() async -> NotifierAuthorization {
+    nonisolated func requestAuthorization() async -> NotifierAuthorization {
         let granted = (try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .badge, .sound])) ?? false
         return granted ? .authorized : .denied
