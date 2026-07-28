@@ -139,18 +139,15 @@ fn payload_path_kind(payload: &NewswirePayload) -> NewswirePathKind {
     }
 }
 
-fn build_signed(
+fn build_signed_from_bytes(
     author: &EvidenceAuthor,
     snapshot: ClockSnapshot,
+    path_kind: NewswirePathKind,
+    payload_bytes: Vec<u8>,
     payload: NewswirePayload,
 ) -> Result<SignedNewswireRecord, NewswireError> {
-    let payload_bytes = encode_payload(&payload)?;
     let digest = william3_digest(&payload_bytes);
-    let path = newswire_path(
-        payload_path_kind(&payload),
-        snapshot.tai_j2000_micros,
-        &digest,
-    )?;
+    let path = newswire_path(path_kind, snapshot.tai_j2000_micros, &digest)?;
     let entry = Entry::builder()
         .namespace_id(author.namespace_id().clone())
         .subspace_id(author.subspace_id())
@@ -174,6 +171,16 @@ fn build_signed(
         snapshot,
         payload,
     })
+}
+
+fn build_signed(
+    author: &EvidenceAuthor,
+    snapshot: ClockSnapshot,
+    payload: NewswirePayload,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    let payload_bytes = encode_payload(&payload)?;
+    let path_kind = payload_path_kind(&payload);
+    build_signed_from_bytes(author, snapshot, path_kind, payload_bytes, payload)
 }
 
 fn require_founding_organizer(
@@ -308,6 +315,84 @@ pub fn create_signed_news_post(
     require_post_authority(author, descriptor, &post)?;
     let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::NewsPost(post))
+}
+
+/// An immutable prepared news post: the exact canonical payload bytes and
+/// clock snapshot that a later `sign_prepared_news_post` call will sign.
+/// Constructed only by `prepare_news_post`; fields are private.
+///
+/// The prepare → review → sign contract: `prepare_news_post` validates
+/// authority and retains the canonical encoding plus the clock snapshot, so
+/// the caller can present those exact bytes for review. `sign_prepared_news_post`
+/// signs the RETAINED bytes with the RETAINED snapshot — it never re-encodes
+/// or re-reads the clock — so what was reviewed is byte-identical to what is
+/// signed. A prepared post is bound to the preparing author's subspace
+/// (keypair); any other
+/// author is rejected with `NewswireError::AuthorityInvalid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedNewsPost {
+    post: NewsPostV1,
+    payload_bytes: Vec<u8>,
+    snapshot: ClockSnapshot,
+    author_subspace_id: [u8; 32],
+}
+
+impl PreparedNewsPost {
+    /// The exact canonical payload bytes a later sign call will commit.
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    /// The clock snapshot captured at prepare time; the signed entry's
+    /// timestamp will be `snapshot.tai_j2000_micros`.
+    pub fn snapshot(&self) -> ClockSnapshot {
+        self.snapshot
+    }
+
+    /// The retained post model, for review display.
+    pub fn post(&self) -> &NewsPostV1 {
+        &self.post
+    }
+}
+
+/// Validate authority and capture an immutable prepared news post: canonical
+/// payload bytes, clock snapshot, and author binding. Signing is deferred to
+/// `sign_prepared_news_post`, which consumes the retained bytes unchanged.
+pub fn prepare_news_post(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    post: NewsPostV1,
+) -> Result<PreparedNewsPost, NewswireError> {
+    require_post_authority(author, descriptor, &post)?;
+    let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
+    let payload_bytes = encode_payload(&NewswirePayload::NewsPost(post.clone()))?;
+    Ok(PreparedNewsPost {
+        post,
+        payload_bytes,
+        snapshot,
+        author_subspace_id: *author.subspace_id().as_bytes(),
+    })
+}
+
+/// Sign a previously prepared news post. The signed record commits the
+/// retained payload bytes and retained snapshot unchanged — signing the same
+/// prepared post twice is deterministic. Only the preparing author may sign.
+pub fn sign_prepared_news_post(
+    author: &EvidenceAuthor,
+    prepared: &PreparedNewsPost,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    if *author.subspace_id().as_bytes() != prepared.author_subspace_id {
+        return Err(NewswireError::AuthorityInvalid);
+    }
+    build_signed_from_bytes(
+        author,
+        prepared.snapshot,
+        NewswirePathKind::Post {
+            space_descriptor_entry_id: prepared.post.space_descriptor_entry_id,
+        },
+        prepared.payload_bytes.clone(),
+        NewswirePayload::NewsPost(prepared.post.clone()),
+    )
 }
 
 pub fn create_signed_editorial_action(
@@ -555,7 +640,8 @@ fn inspect_verified_components_bounded(
 mod tests {
     use super::*;
     use crate::willow::{
-        generate_communal_author_for_namespace, generate_space_organizer_author, Path,
+        generate_communal_author, generate_communal_author_for_namespace,
+        generate_space_organizer_author, Path,
     };
 
     fn descriptor(namespace_id: [u8; 32], roster: Vec<[u8; 32]>) -> SpaceDescriptorV1 {
@@ -1271,5 +1357,129 @@ mod tests {
             inspect_verified_components(&entry, b""),
             Err(NewswireError::NonCommunalNamespace)
         );
+    }
+
+    fn post(space_descriptor_entry_id: EntryId) -> NewsPostV1 {
+        NewsPostV1 {
+            space_descriptor_entry_id,
+            headline: "Update".into(),
+            body: "Human report".into(),
+            language: "en".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        }
+    }
+
+    fn prepared_descriptor(
+        organizer: &EvidenceAuthor,
+        editor: &EvidenceAuthor,
+    ) -> (SignedNewswireRecord, VerifiedNewswireRecord) {
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let descriptor_record = build_signed(
+            organizer,
+            snapshot(100),
+            NewswirePayload::SpaceDescriptor(descriptor(
+                namespace_id,
+                vec![*editor.subspace_id().as_bytes()],
+            )),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+        (descriptor_record, verified)
+    }
+
+    #[test]
+    fn prepared_post_signs_exactly_the_reviewed_bytes() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let record = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        assert_eq!(&record.signed.payload_bytes, prepared.payload_bytes());
+        assert_eq!(record.snapshot, prepared.snapshot());
+        assert_eq!(
+            crate::willow::entry_timestamp_micros(&record.signed.entry_bytes).unwrap(),
+            prepared.snapshot().tai_j2000_micros
+        );
+    }
+
+    #[test]
+    fn signing_the_same_prepared_post_twice_is_deterministic() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let first = sign_prepared_news_post(&editor, &prepared).unwrap();
+        let second = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        assert_eq!(first.signed.entry_bytes, second.signed.entry_bytes);
+        assert_eq!(first.signed.signature, second.signed.signature);
+        assert_eq!(first.entry_id, second.entry_id);
+    }
+
+    #[test]
+    fn prepared_post_is_bound_to_the_preparing_author() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let other = generate_communal_author_for_namespace(namespace_id).unwrap();
+
+        assert_eq!(
+            sign_prepared_news_post(&other, &prepared),
+            Err(NewswireError::AuthorityInvalid)
+        );
+    }
+
+    #[test]
+    fn prepare_news_post_rejects_an_unauthorized_author() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let outsider = generate_communal_author().unwrap();
+        assert_eq!(
+            prepare_news_post(&outsider, &verified, post(verified.entry_id())),
+            Err(NewswireError::AuthorityInvalid)
+        );
+    }
+
+    #[test]
+    fn prepared_post_enters_through_the_ordinary_admission_path() {
+        use crate::import::encode_bundle;
+        use crate::session::{ImportContext, InspectOutcome, RiotSession};
+
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let record = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        // Post admission is self-contained: no descriptor needs to be present
+        // in the store for the post to be eligible.
+        let post_bundle = encode_bundle(std::slice::from_ref(&record.signed)).unwrap();
+        let session = RiotSession::open().unwrap();
+        let store = session.create_store().unwrap();
+        let outcome = store
+            .inspect(&post_bundle, ImportContext::new("test"))
+            .unwrap();
+        let InspectOutcome::Preview(preview) = outcome else {
+            panic!("expected InspectOutcome::Preview");
+        };
+        assert_eq!(preview.eligible_count().unwrap(), 1);
     }
 }
