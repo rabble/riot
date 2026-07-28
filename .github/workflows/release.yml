@@ -1,0 +1,210 @@
+name: Release
+
+# Full 0.1.1-style release pipeline in the cloud: Android AAB+APK, iOS IPA to
+# TestFlight, macOS PKG + notarized/stapled DMG, and optionally a GitHub
+# release. Manual dispatch only — never automatic.
+#
+# Required secrets:
+#   ASC_KEY_P8                App Store Connect API key (p8 contents)
+#   ASC_KEY_ID                e.g. M95U99RZY4
+#   ASC_ISSUER_ID             team issuer UUID
+#   APPLE_DIST_P12_B64        Apple Distribution cert + key, base64 p12
+#   P12_PASSWORD              password for all p12 secrets
+#   MAC_INSTALLER_P12_B64     3rd Party Mac Developer Installer cert + key
+#   DEV_ID_APPLICATION_P12_B64 Developer ID Application cert + key (DMG channel)
+#   IOS_PROVISION_B64         iOS App Store .mobileprovision, base64
+#   MAC_PROVISION_B64         macOS App Store .provisionprofile, base64
+#   ANDROID_KEYSTORE_B64      upload keystore, base64
+#   ANDROID_KEYSTORE_PASSWORD keystore/key password
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: "Upload the IPA to TestFlight"
+        type: boolean
+        default: true
+      create_github_release:
+        description: "Create a GitHub prerelease with DMG + APK"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Tag for the GitHub release (e.g. v0.1.2)"
+        required: false
+        default: ""
+
+env:
+  ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+  ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+  ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain components
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Add Android Rust targets
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+
+      - name: Ensure NDK 28.2.13676358
+        run: |
+          if [ ! -d "$ANDROID_SDK_ROOT/ndk/28.2.13676358" ]; then
+            yes | sdkmanager "ndk;28.2.13676358"
+          fi
+
+      - name: Restore upload keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/riot-release-key.jks"
+
+      - name: Build signed AAB + APK
+        env:
+          RIOT_KEYSTORE_PATH: ${{ runner.temp }}/riot-release-key.jks
+          RIOT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: sh scripts/android-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: |
+            apps/android/app/build/outputs/bundle/release/app-release.aab
+            apps/android/app/build/outputs/apk/release/app-release.apk
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain components
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Add iOS device Rust target
+        run: rustup target add aarch64-apple-ios
+
+      - name: Install ASC API key
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.ASC_KEY_P8 }}" > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+
+      - name: Set up signing keychain + profile
+        env:
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          security create-keychain -p ci ci.keychain-db
+          security default-keychain -s ci.keychain-db
+          security unlock-keychain -p ci ci.keychain-db
+          security set-keychain-settings -lut 3600 ci.keychain-db
+          echo "${{ secrets.APPLE_DIST_P12_B64 }}" | base64 -d > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k ci.keychain-db -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/xcodebuild
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci ci.keychain-db
+          security list-keychains -d user -s ci.keychain-db $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          echo "${{ secrets.IOS_PROVISION_B64 }}" | base64 -d \
+            > "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/riot.mobileprovision"
+
+      - name: Build IPA (+ upload when requested)
+        env:
+          UPLOAD: ${{ inputs.upload_testflight && '1' || '0' }}
+        run: sh scripts/testflight-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: build/testflight/Riot.ipa
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain components
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Add macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install ASC API key
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.ASC_KEY_P8 }}" > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+
+      - name: Set up signing keychain + profile
+        env:
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          security create-keychain -p ci ci.keychain-db
+          security default-keychain -s ci.keychain-db
+          security unlock-keychain -p ci ci.keychain-db
+          security set-keychain-settings -lut 3600 ci.keychain-db
+          echo "${{ secrets.APPLE_DIST_P12_B64 }}" | base64 -d > "$RUNNER_TEMP/dist.p12"
+          echo "${{ secrets.MAC_INSTALLER_P12_B64 }}" | base64 -d > "$RUNNER_TEMP/installer.p12"
+          echo "${{ secrets.DEV_ID_APPLICATION_P12_B64 }}" | base64 -d > "$RUNNER_TEMP/devid.p12"
+          for p in dist installer devid; do
+            security import "$RUNNER_TEMP/$p.p12" -k ci.keychain-db -P "$P12_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/xcodebuild -T /usr/bin/productsign
+          done
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci ci.keychain-db
+          security list-keychains -d user -s ci.keychain-db $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          echo "${{ secrets.MAC_PROVISION_B64 }}" | base64 -d \
+            > "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/riot-mac.provisionprofile"
+
+      - name: Build Mac App Store PKG
+        run: sh scripts/macos-release.sh
+
+      - name: Build notarized + stapled DMG
+        env:
+          CHANNEL: developerid
+          UPLOAD: "1"
+        run: sh scripts/macos-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            build/macos-release/export/*.pkg
+            build/macos-release/*.dmg
+
+  github-release:
+    needs: [android, macos]
+    if: inputs.create_github_release && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Stage assets
+        run: |
+          mkdir dist
+          cp android/app-release.apk "dist/Riot-${{ inputs.release_tag }}.apk"
+          cp macos/*.dmg "dist/Riot-${{ inputs.release_tag }}-universal.dmg"
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.release_tag }}" --prerelease \
+            --title "Riot ${{ inputs.release_tag }} (alpha)" \
+            --notes "Built by the cloud release workflow. Proof of concept: can lose data or expose you." \
+            dist/*
