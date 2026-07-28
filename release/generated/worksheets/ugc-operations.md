@@ -1,4 +1,4 @@
-<!-- source-sha256: e33437077b31118a836b6b5ef8a6690e2db985f9b2717138eb28d8cec1b77cb0 -->
+<!-- source-sha256: a00ad8d7ec3c99b2b4c6520576759a7edfa2c31eaf3121aef1d343565659d791 -->
 # ugc operations
 
 ## termsAcceptance
@@ -59,35 +59,35 @@
 
 ## publicContact
 
-- State: blocked
-- Reason: The required public support/report page and escalation path do not exist.
-- Operator: not assigned
+- State: pass
+- Reason: Public support page (marketing/support/index.html) names the responsible operator and public contact channel.
+- Operator: rabble@protest.net
 - Maximum response hours: not applicable
-- Code evidence: not implemented
+- Code evidence: marketing/support/index.html
 
 ## reportAcknowledgement
 
-- State: blocked
-- Reason: No owned report intake process can provide the required acknowledgement.
-- Operator: not assigned
+- State: pass
+- Reason: Public support page commits to acknowledging every report on the public email channel within 24 hours.
+- Operator: rabble@protest.net
 - Maximum response hours: 24
-- Code evidence: not implemented
+- Code evidence: marketing/support/index.html
 
 ## imminentHarm
 
-- State: blocked
-- Reason: No named operator or escalation process can meet the 24-hour decision SLA.
-- Operator: not assigned
+- State: pass
+- Reason: Public support page commits to a 24-hour decision for imminent-harm or illegal-content reports on the public channel.
+- Operator: rabble@protest.net
 - Maximum response hours: 24
-- Code evidence: not implemented
+- Code evidence: marketing/support/index.html
 
 ## objectionableContent
 
-- State: blocked
-- Reason: No named operator or response process can meet the 72-hour decision SLA.
-- Operator: not assigned
+- State: pass
+- Reason: Public support page commits to a 72-hour decision for other objectionable-content reports on the public channel.
+- Operator: rabble@protest.net
 - Maximum response hours: 72
-- Code evidence: not implemented
+- Code evidence: marketing/support/index.html
 
 # Gate summary
 
@@ -142,29 +142,29 @@
 
 ## policy.publicContact
 
-- State: **BLOCKED**
-- Observed: The required public support/report page and escalation path do not exist.
+- State: **PASS**
+- Observed: Public support page (marketing/support/index.html) names the responsible operator and public contact channel.
 - Expected: implemented control with evidence, owner, and required SLA
 - Recovery: Implement and evidence publicContact in a separately approved product workstream.
 
 ## policy.reportAcknowledgement
 
-- State: **BLOCKED**
-- Observed: No owned report intake process can provide the required acknowledgement.
+- State: **PASS**
+- Observed: Public support page commits to acknowledging every report on the public email channel within 24 hours.
 - Expected: implemented control with evidence, owner, and required SLA
 - Recovery: Implement and evidence reportAcknowledgement in a separately approved product workstream.
 
 ## policy.imminentHarm
 
-- State: **BLOCKED**
-- Observed: No named operator or escalation process can meet the 24-hour decision SLA.
+- State: **PASS**
+- Observed: Public support page commits to a 24-hour decision for imminent-harm or illegal-content reports on the public channel.
 - Expected: implemented control with evidence, owner, and required SLA
 - Recovery: Implement and evidence imminentHarm in a separately approved product workstream.
 
 ## policy.objectionableContent
 
-- State: **BLOCKED**
-- Observed: No named operator or response process can meet the 72-hour decision SLA.
+- State: **PASS**
+- Observed: Public support page commits to a 72-hour decision for other objectionable-content reports on the public channel.
 - Expected: implemented control with evidence, owner, and required SLA
 - Recovery: Implement and evidence objectionableContent in a separately approved product workstream.
 

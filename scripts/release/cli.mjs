@@ -186,7 +186,23 @@ export async function runCli({
         fs,
         sha256,
       });
-      const fixtureSha256 = "930a9c5aa06dea920b0502dbd72b6b2bf00d1b4cb9405b99e69e00d035640469";
+      // The shared release fixture digest is pinned so provenance stays stable,
+      // but it must be recomputed from the actual file at generate time —
+      // otherwise a fixture edit silently produces artifacts bound to a stale
+      // digest.
+      const pinnedFixtureSha256 = "930a9c5aa06dea920b0502dbd72b6b2bf00d1b4cb9405b99e69e00d035640469";
+      const fixtureSha256 = sha256(await fs.readFile(join(root, "fixtures", "release", "riot-1.0-synthetic.json")));
+      if (fixtureSha256 !== pinnedFixtureSha256) {
+        const driftError = new Error(
+          `release fixture digest drift: fixtures/release/riot-1.0-synthetic.json hashes to ${fixtureSha256}, ` +
+          `expected pinned ${pinnedFixtureSha256}. Re-pin deliberately and update every fixture consumer in the same commit.`,
+        );
+        // Digests are safe to print (no paths or source contents); flag so the
+        // generate error handler can surface this instead of the generic
+        // redacted failure.
+        driftError.exposeToOperator = true;
+        throw driftError;
+      }
       const { icons } = await renderIcons({
         masterPath: join(root, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"),
         outputDirectory: join(root, "release", "generated"),
@@ -212,7 +228,11 @@ export async function runCli({
         `generated 11 worksheets, 12 metadata artifacts (apple ${appleManifestSha256}, google ${googleManifestSha256}), and 52 visual artifacts\n`,
       );
       return 0;
-    } catch {
+    } catch (error) {
+      if (error && error.exposeToOperator === true) {
+        stderr.write(`${error.message}\n`);
+        return 1;
+      }
       stderr.write("release generation failed: correct the canonical source diagnostics with status\n");
       return 1;
     }

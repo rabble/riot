@@ -133,6 +133,14 @@ export async function evaluateSnapshotFreshness({ snapshot, repositoryRoot, fs, 
   }
   const drifted = [];
   for (const [path, expected] of Object.entries(snapshot.fileHashes)) {
+    // Defense in depth: the schema constrains fileHashes keys, but this gate
+    // also runs against unchecked snapshots. Never let a snapshot key read
+    // outside the repository root — a `../../x` key would hash an arbitrary
+    // file and leak its digest into the gate's observed output.
+    if (path.split("/").includes("..") || path.startsWith("/") || path.includes("\\")) {
+      drifted.push(`${path} (unsafe snapshot path)`);
+      continue;
+    }
     let observed;
     try {
       observed = sha256(await fs.readFile(`${repositoryRoot}/${path}`));

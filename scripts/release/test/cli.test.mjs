@@ -14,6 +14,8 @@ const cli = join(repositoryRoot, "scripts", "release", "cli.mjs");
 async function releaseRoot() {
   const root = await mkdtemp(join(tmpdir(), "riot-release-cli-"));
   await cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });
+  // Generate re-hashes the shared fixture against its pinned digest.
+  await cp(join(repositoryRoot, "fixtures", "release"), join(root, "fixtures", "release"), { recursive: true });
   // Visual generation reads the checked-in fonts and icon master.
   await cp(
     join(repositoryRoot, "apps", "ios", "Riot", "Resources", "Fonts"),
@@ -313,4 +315,14 @@ test("status output never includes evidence payloads or environment secrets", as
   const result = await run(root, ["status", "--json"], { RIOT_TEST_SECRET: "DO_NOT_PRINT_THIS" });
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, /DO_NOT_PRINT_THIS/);
   assert.doesNotMatch(result.stdout, /privateKey|password|token/);
+});
+
+test("generate fails closed when the shared fixture drifts from the pinned digest", async () => {
+  const root = await releaseRoot();
+  const fixturePath = join(root, "fixtures", "release", "riot-1.0-synthetic.json");
+  const original = await readFile(fixturePath, "utf8");
+  await writeFile(fixturePath, `${original}\n`);
+  const result = await run(root, ["generate"]);
+  assert.notEqual(result.code, 0, "generate must fail when the fixture digest drifts");
+  assert.match(result.stderr + result.stdout, /fixture.*digest|digest.*fixture/i);
 });

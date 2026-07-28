@@ -207,3 +207,38 @@ test("freshness requires a sha256 dependency", async () => {
     /sha256 dependency is required/,
   );
 });
+
+test("freshness rejects traversal/absolute fileHashes keys without reading outside the root", async () => {
+  const root = await tempReleaseRoot();
+  const outside = join(root, "..", `outside-${process.pid}.txt`);
+  await realFs.writeFile(outside, "secret");
+  try {
+    const digest = sha256("secret");
+    for (const key of [`../outside-${process.pid}.txt`, "/etc/passwd", "apps\\..\\evil"]) {
+      const result = await evaluateSnapshotFreshness({
+        snapshot: { fileHashes: { [key]: digest } },
+        repositoryRoot: root,
+        fs: realFs,
+        sha256,
+      });
+      assert.equal(result.state, "BLOCKED", `key must fail closed: ${key}`);
+      assert.match(String(result.observed), new RegExp("unsafe snapshot path"));
+    }
+  } finally {
+    await realFs.rm(outside, { force: true });
+  }
+});
+
+test("snapshot schema rejects traversal and absolute fileHashes keys", async () => {
+  const { loadSchemaRegistry, validateSource } = await import("../schema.mjs");
+  const repositoryRoot = new URL("../../..", import.meta.url).pathname;
+  const snapshot = JSON.parse(
+    await realFs.readFile(join(repositoryRoot, "release", "source", "configuration-snapshot.json"), "utf8"),
+  );
+  const registry = await loadSchemaRegistry(join(repositoryRoot, "release", "schemas"));
+  for (const key of ["../escape", "/abs/path", "a\\b"]) {
+    const candidate = structuredClone(snapshot);
+    candidate.fileHashes = { [key]: "0".repeat(64) };
+    assert.throws(() => validateSource(registry, "configuration-snapshot", candidate), undefined, `schema must reject key: ${key}`);
+  }
+});

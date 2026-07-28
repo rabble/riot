@@ -46,6 +46,10 @@ test("real policy sources are schema-valid and truthfully not public-ready", asy
   const result = evaluatePolicy(await sources());
   assert(result.some(({ id, state }) => id === "product.identity" && state === "PASS"));
   assert(result.some(({ id, state }) => id === "policy.filtering" && state === "BLOCKED"));
+  assert(result.some(({ id, state }) => id === "policy.publicContact" && state === "PASS"));
+  assert(result.some(({ id, state }) => id === "policy.reportAcknowledgement" && state === "PASS"));
+  assert(result.some(({ id, state }) => id === "policy.imminentHarm" && state === "PASS"));
+  assert(result.some(({ id, state }) => id === "policy.objectionableContent" && state === "PASS"));
   assert(result.some(({ id, state }) => id === "url.support" && state === "PASS"));
   assert(result.some(({ id, state }) => id === "export.classification" && state === "HUMAN ACTION"));
   assert(result.some(({ id, state }) => id === "account.agreements" && state === "HUMAN ACTION"));

@@ -7,16 +7,90 @@
     "rationale": "Recommend these ratings because Riot contains user-generated content and community reporting; authenticated store questionnaires still require human confirmation."
   },
   "controls": {
-    "termsAcceptance": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No in-app Terms or user-policy acceptance flow was found." },
-    "prohibitedContent": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No published prohibited-content rules tied to the app were found." },
-    "filtering": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No objectionable-content filtering control was found." },
-    "contentReporting": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No in-app content-reporting flow was found." },
-    "authorReporting": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No in-app author-reporting flow was found." },
-    "localBlocking": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No immediate local author-blocking control was found." },
-    "moderatorTombstone": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "Protocol tombstones exist, but no report-to-moderator response workflow was found." },
-    "publicContact": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "The required public support/report page and escalation path do not exist." },
-    "reportAcknowledgement": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": 24, "reason": "No owned report intake process can provide the required acknowledgement." },
-    "imminentHarm": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": 24, "reason": "No named operator or escalation process can meet the 24-hour decision SLA." },
-    "objectionableContent": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": 72, "reason": "No named operator or response process can meet the 72-hour decision SLA." }
+    "termsAcceptance": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No in-app Terms or user-policy acceptance flow was found."
+    },
+    "prohibitedContent": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No published prohibited-content rules tied to the app were found."
+    },
+    "filtering": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No objectionable-content filtering control was found."
+    },
+    "contentReporting": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No in-app content-reporting flow was found."
+    },
+    "authorReporting": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No in-app author-reporting flow was found."
+    },
+    "localBlocking": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "No immediate local author-blocking control was found."
+    },
+    "moderatorTombstone": {
+      "state": "blocked",
+      "codePaths": [],
+      "operator": "",
+      "maxHours": null,
+      "reason": "Protocol tombstones exist, but no report-to-moderator response workflow was found."
+    },
+    "publicContact": {
+      "state": "pass",
+      "codePaths": [
+        "marketing/support/index.html"
+      ],
+      "operator": "rabble@protest.net",
+      "maxHours": null,
+      "reason": "Public support page (marketing/support/index.html) names the responsible operator and public contact channel."
+    },
+    "reportAcknowledgement": {
+      "state": "pass",
+      "codePaths": [
+        "marketing/support/index.html"
+      ],
+      "operator": "rabble@protest.net",
+      "maxHours": 24,
+      "reason": "Public support page commits to acknowledging every report on the public email channel within 24 hours."
+    },
+    "imminentHarm": {
+      "state": "pass",
+      "codePaths": [
+        "marketing/support/index.html"
+      ],
+      "operator": "rabble@protest.net",
+      "maxHours": 24,
+      "reason": "Public support page commits to a 24-hour decision for imminent-harm or illegal-content reports on the public channel."
+    },
+    "objectionableContent": {
+      "state": "pass",
+      "codePaths": [
+        "marketing/support/index.html"
+      ],
+      "operator": "rabble@protest.net",
+      "maxHours": 72,
+      "reason": "Public support page commits to a 72-hour decision for other objectionable-content reports on the public channel."
+    }
   }
 }
