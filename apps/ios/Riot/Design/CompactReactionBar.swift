@@ -1,17 +1,6 @@
 import Foundation
 import SwiftUI
 
-public extension ReactionKind {
-    var glyph: String {
-        switch self {
-        case .support: "♥"
-        case .solidarity: "✊︎"
-        case .important: "!"
-        case .grief: "◌"
-        }
-    }
-}
-
 public enum ReactionCountFormatter {
     public static func string(_ count: Int) -> String {
         String(max(0, min(count, 999))) + (count > 999 ? "+" : "")
