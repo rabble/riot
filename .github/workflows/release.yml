@@ -36,7 +36,9 @@ on:
 env:
   ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
   ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-  ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+  # ASC_KEY_PATH is set per-step and propagated via $GITHUB_ENV — the
+  # `runner` context is not available in workflow- or job-level env and
+  # makes the workflow fail at startup.
 
 jobs:
   android:
@@ -94,10 +96,13 @@ jobs:
         run: rustup target add aarch64-apple-ios
 
       - name: Install ASC API key
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "${{ secrets.ASC_KEY_P8 }}" > "$ASC_KEY_PATH"
           chmod 600 "$ASC_KEY_PATH"
+          echo "ASC_KEY_PATH=$ASC_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Set up signing keychain + profile
         env:
@@ -143,10 +148,13 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Install ASC API key
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "${{ secrets.ASC_KEY_P8 }}" > "$ASC_KEY_PATH"
           chmod 600 "$ASC_KEY_PATH"
+          echo "ASC_KEY_PATH=$ASC_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Set up signing keychain + profile
         env:
