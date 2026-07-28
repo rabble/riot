@@ -5,9 +5,9 @@ use crate::session::EvidenceStore;
 use crate::willow::{encode_entry, EntryId, Path};
 
 use super::{
-    contributors, inspect_verified_components, project, ContributorRowV1, NewswirePayload,
-    NewswireProjection, NewswireProjectionError, ProjectionClockV1, VerifiedNewswireRecord,
-    MAX_PROJECTED_RECORDS,
+    contributors, inspect_verified_components, project, project_for_viewer, ContributorRowV1,
+    NewswirePayload, NewswireProjection, NewswireProjectionError, ProjectionClockV1,
+    VerifiedNewswireRecord, MAX_PROJECTED_RECORDS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +77,37 @@ pub fn load_space_descriptor(
     decode_descriptor_entries(descriptor_id, matches)
 }
 
+/// Every space descriptor currently in the store, discovered by scanning the
+/// `newswire/v1/descriptors` prefix across all namespaces.
+///
+/// This is the discovery counterpart to `load_space_descriptor` (which fetches
+/// ONE by known id): a device that IMPORTED a community's entries over sync —
+/// e.g. an anchor-relay pull — holds the descriptor but was never told its id,
+/// so it needs to find the descriptors it now has before it can project their
+/// wire or adopt them into the registry. A single malformed/undecodable entry is
+/// skipped rather than failing the whole scan, so one bad row cannot hide every
+/// good community.
+pub fn discover_space_descriptors(
+    store: &EvidenceStore,
+) -> Result<Vec<VerifiedNewswireRecord>, NewswireStoreError> {
+    let prefix = Path::from_slices(&[b"newswire", b"v1", b"descriptors"])
+        .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
+    let entries = store
+        .entries_with_prefix(&prefix)
+        .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
+    let mut records = Vec::new();
+    for entry in entries {
+        // Only genuine, decodable SpaceDescriptor rows count. A retained-payload
+        // gap or a non-descriptor row under this prefix is skipped, not fatal.
+        if let Ok(record) = decode_scanned_entry(entry) {
+            if matches!(record.payload(), NewswirePayload::SpaceDescriptor(_)) {
+                records.push(record);
+            }
+        }
+    }
+    Ok(records)
+}
+
 pub fn load_space_records(
     store: &EvidenceStore,
     descriptor_id: EntryId,
@@ -124,9 +155,20 @@ pub fn project_space(
     descriptor_id: EntryId,
     clock: ProjectionClockV1,
 ) -> Result<NewswireProjection, NewswireStoreError> {
+    project_space_for_viewer(store, descriptor_id, clock, None)
+}
+
+/// Store-backed projection annotated with the optional viewer's current
+/// reaction state. The viewer id never leaves core; only per-tally booleans do.
+pub fn project_space_for_viewer(
+    store: &EvidenceStore,
+    descriptor_id: EntryId,
+    clock: ProjectionClockV1,
+    viewer: Option<[u8; 32]>,
+) -> Result<NewswireProjection, NewswireStoreError> {
     let descriptor = load_space_descriptor(store, descriptor_id)?;
     let records = load_space_records(store, descriptor_id)?;
-    project(&descriptor, &records, clock).map_err(Into::into)
+    project_for_viewer(&descriptor, &records, clock, viewer).map_err(Into::into)
 }
 
 /// The Known-contributors surface for a space: every distinct author of a

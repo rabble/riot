@@ -40,7 +40,7 @@
       "name": "notifications",
       "platform": "all",
       "justification": "Show local alerts for community updates when enabled.",
-      "evidencePath": "apps/android/app/src/main/kotlin/org/riot/evidence/LocalNotifier.kt"
+      "evidencePath": "apps/android/app/src/main/kotlin/net/protest/riot/LocalNotifier.kt"
     },
     {
       "name": "android-internet",

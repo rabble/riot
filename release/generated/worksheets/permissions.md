@@ -1,4 +1,4 @@
-<!-- source-sha256: 68bbdfcd6ee983d4c355f82189a31798bb7cf1f30916a01e3f92f47b28d918e4 -->
+<!-- source-sha256: 0226348d7fef6c716989998149b7accd731ed335a4b3385137a806355b929ada -->
 # permissions
 
 ## Permission justification inventory
@@ -8,7 +8,7 @@
 | camera | apple | Scan a community QR code selected by the user. | apps/ios/Riot/QRScannerView.swift |
 | bluetooth | all | Discover a nearby Riot peer selected by the user. | apps/ios/Riot/Transport/LocalNetworkNearby.swift |
 | local-network | apple | Exchange community records directly with a nearby peer. | apps/ios/Riot/Info.plist |
-| notifications | all | Show local alerts for community updates when enabled. | apps/android/app/src/main/kotlin/org/riot/evidence/LocalNotifier.kt |
+| notifications | all | Show local alerts for community updates when enabled. | apps/android/app/src/main/kotlin/net/protest/riot/LocalNotifier.kt |
 | android-internet | android | Android uses INTERNET for user-directed LAN and followed-site connections. | apps/android/app/src/main/AndroidManifest.xml |
 
 # Gate summary

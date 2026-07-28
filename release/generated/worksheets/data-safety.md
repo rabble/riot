@@ -1,4 +1,4 @@
-<!-- source-sha256: 68bbdfcd6ee983d4c355f82189a31798bb7cf1f30916a01e3f92f47b28d918e4 -->
+<!-- source-sha256: 0226348d7fef6c716989998149b7accd731ed335a4b3385137a806355b929ada -->
 # data safety
 
 ## Google Play Data safety position
@@ -22,7 +22,7 @@
 - iOS code evidence: apps/ios/Riot/RiotApp.swift
 - iPadOS code evidence: apps/ios/Riot/RiotApp.swift
 - macOS code evidence: apps/macos/Riot/RiotMacApp.swift
-- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt
+- Android code evidence: apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt
 
 ## denied-permission
 
@@ -37,7 +37,7 @@
 - iOS code evidence: apps/ios/Riot/QRScannerView.swift
 - iPadOS code evidence: apps/ios/Riot/QRScannerView.swift
 - macOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/macos/Riot.xcodeproj/project.pbxproj
-- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt
+- Android code evidence: apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt, apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt
 
 ## granted-permission
 
@@ -52,7 +52,7 @@
 - iOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift
 - iPadOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift
 - macOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift, apps/macos/Riot.xcodeproj/project.pbxproj
-- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt
+- Android code evidence: apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt, apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt, apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt
 
 ## nearby-sync
 
@@ -67,7 +67,7 @@
 - iOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, crates/riot-transport/src/lib.rs
 - iPadOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, crates/riot-transport/src/lib.rs
 - macOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, apps/macos/Riot.xcodeproj/project.pbxproj, crates/riot-transport/src/lib.rs
-- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyTransport.kt, crates/riot-transport/src/lib.rs
+- Android code evidence: apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt, apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyTransport.kt, crates/riot-transport/src/lib.rs
 
 ## followed-site-refresh
 
@@ -82,7 +82,7 @@
 - iOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift
 - iPadOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift
 - macOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift, apps/macos/Riot.xcodeproj/project.pbxproj
-- Android code evidence: crates/riot-core/src/site/follow.rs, apps/android/app/src/main/kotlin/org/riot/evidence/FollowSite.kt, apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt
+- Android code evidence: crates/riot-core/src/site/follow.rs, apps/android/app/src/main/kotlin/net/protest/riot/FollowSite.kt, apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt
 
 # Gate summary
 

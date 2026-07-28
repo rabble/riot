@@ -1,5 +1,175 @@
 import Foundation
+import OSLog
 import SwiftUI
+
+/// The app's built-in "known relay + known community": the deployed GCP anchor
+/// relay's stable NodeId and a root-signed ReadCommitted ticket for a community
+/// already committed on that relay. Baked in so the app can pull a real community
+/// out of the box — no IP, no port, no manual paste. The relay is dialed by its
+/// NodeId ALONE: iroh relay + pkarr/DNS discovery resolves the address.
+///
+/// Lives in RiotKit (not the app target) because ``RiotAppModel/syncFromRelay()``
+/// drives the pull; the visible `AnchorRelaySyncCard` reads this too.
+public enum AnchorRelayDefaults {
+    /// The deployed relay's stable NodeId (64 hex) — the whole dial hint.
+    public static let relayNodeId =
+        "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
+
+    /// A root-signed ReadCommitted ticket (hex) for a community already committed
+    /// on the relay (O masthead + C comments + W newswire wire). Re-baked
+    /// 2026-07-24 for the real newswire community already hosted by the live
+    /// relay; community root (W)
+    /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
+    /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
+    public static let communityTicketHex =
+        "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62b28f1a6ad8080f5840badb5fa31067a5c330ba16ca97fbedf1ba9201c981c5014175721ccb2af61c83723514116260ef952516d0fcc0b474455b0ac8a4dd3fa39c019c77848fed9e00"
+
+    /// A human name for the built-in community, shown when its own signed
+    /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
+    public static let communityDisplayName = "River City Wire"
+
+    /// Decode the baked ticket hex to bytes.
+    public static var communityTicket: Data { data(fromHex: communityTicketHex) }
+
+    static func data(fromHex hex: String) -> Data {
+        var data = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return Data() }
+            data.append(byte)
+            index = next
+        }
+        return data
+    }
+}
+
+/// The human outcome of a relay pull, as the card reads it. Leads with the
+/// COMMUNITY — its name, how many people and posts are there — not with protocol
+/// counts. `namespaceID` is set (and ``isWalkInReady`` true) only when the
+/// community was adopted into the chooser and can actually be opened.
+public struct RelaySyncResult: Equatable, Sendable {
+    public let communityName: String
+    public let namespaceID: String?
+    public let peopleCount: Int
+    public let postCount: Int
+    public let syncedAt: Date
+    public let isWalkInReady: Bool
+
+    public init(
+        communityName: String,
+        namespaceID: String?,
+        peopleCount: Int,
+        postCount: Int,
+        syncedAt: Date,
+        isWalkInReady: Bool
+    ) {
+        self.communityName = communityName
+        self.namespaceID = namespaceID
+        self.peopleCount = peopleCount
+        self.postCount = postCount
+        self.syncedAt = syncedAt
+        self.isWalkInReady = isWalkInReady
+    }
+}
+
+/// Turns typed anchor failures into honest, user-facing recovery guidance.
+/// Protocol details remain in the developer log; importantly, a rejected ticket
+/// is never mislabeled as an offline relay.
+enum AnchorRelayFailure {
+    static let relayUnreachable =
+        "Riot couldn’t reach the relay just now. It may be offline, or this device may have no internet; nothing on your device changed."
+    private static let expiredBuiltInLink =
+        "Riot’s built-in community link expired. Update Riot to get a fresh link; nothing on your device changed."
+    private static let invalidBuiltInLink =
+        "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+
+    static func message(for error: Error) -> String {
+        guard let anchorError = error as? AnchorSyncError else {
+            return relayUnreachable
+        }
+
+        switch anchorError {
+        case let .DialRefused(reason):
+            if reason.localizedCaseInsensitiveContains("expired") {
+                return expiredBuiltInLink
+            }
+            return invalidBuiltInLink
+        case .TicketMalformed:
+            return invalidBuiltInLink
+        case .BadAnchorAddress:
+            return "Riot’s built-in relay address is no longer valid. Update Riot to reconnect; nothing on your device changed."
+        case .Import:
+            return "Riot reached the relay but couldn’t save the community just now; nothing on your device changed."
+        case .Bind:
+            return "Riot couldn’t start internet syncing just now. Restart Riot and try again; nothing on your device changed."
+        case .Transport:
+            return relayUnreachable
+        }
+    }
+
+    static func message(forRefusal refusal: String) -> String {
+        let normalized = refusal.lowercased()
+        if normalized.contains("expiredticket") || normalized.contains("expired_ticket") {
+            return "Riot’s built-in community link expired. Update Riot to get a fresh link; Riot did not open or switch communities."
+        }
+        let invalidAuthorityTokens = [
+            "invalidticket",
+            "invalid_ticket",
+            "manifestmismatch",
+            "manifest_mismatch",
+            "namespacenotmember",
+            "namespace_not_member",
+            "transportmismatch",
+            "transport_mismatch",
+            "unsupportedversion",
+            "unsupported_version",
+        ]
+        if invalidAuthorityTokens.contains(where: normalized.contains) {
+            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; Riot did not open or switch communities."
+        }
+        if normalized.contains("busy") {
+            return "Riot reached the relay, but it is busy just now. Try again shortly; Riot did not open or switch communities."
+        }
+        return "Riot reached the relay, but it couldn’t provide the community just now. Try again later; Riot did not open or switch communities."
+    }
+}
+
+/// Developer-facing trail for a relay pull — the namespace ids, verified/rejected
+/// counts, and refusal strings stay HERE (os_log), never on the person's screen.
+enum RelaySyncLog {
+    private static let logger = Logger(subsystem: "net.protest.riot", category: "anchor-relay")
+
+    static func pullLanded(root: String, imported: Int, namespaces: [NamespacePullOutcome]) {
+        logger.log("anchor-relay: durable pull landed root=\(root, privacy: .public) imported=\(imported, privacy: .public)")
+        for ns in namespaces {
+            logger.log("anchor-relay: ns=\(ns.namespaceId, privacy: .public) verified=\(ns.verified, privacy: .public) imported=\(ns.imported, privacy: .public) rejected=\(ns.rejected, privacy: .public) refusal=\(ns.refusal ?? "none", privacy: .public)")
+        }
+    }
+
+    static func adoptFailed(namespace: String, error: Error) {
+        logger.error("anchor-relay: adopt failed ns=\(namespace, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    }
+
+    static func pullFailed(error: Error) {
+        logger.error("anchor-relay: pull failed: \(error.localizedDescription, privacy: .public)")
+    }
+
+    static func pullRefused(namespace: String, refusal: String) {
+        logger.error("anchor-relay: pull refused ns=\(namespace, privacy: .public): \(refusal, privacy: .public)")
+    }
+
+    static func discovered(_ candidates: [SyncedCommunityCandidate]) {
+        logger.log("anchor-relay: discovered \(candidates.count, privacy: .public) candidate(s)")
+        for c in candidates {
+            logger.log("anchor-relay: candidate ns=\(c.namespaceId, privacy: .public) descriptor=\(c.descriptorEntryId ?? "nil", privacy: .public) name=\(c.name ?? "nil", privacy: .public) posts=\(c.postCount, privacy: .public) alerts=\(c.alertCount, privacy: .public) people=\(c.contributorCount, privacy: .public)")
+        }
+    }
+
+    static func discoverFailed(error: Error) {
+        logger.error("anchor-relay: discover failed: \(error.localizedDescription, privacy: .public)")
+    }
+}
 
 /// The three supported ways to leave first-run setup. Nearby exchange requires
 /// an active community, so it is deliberately not an onboarding exit.
@@ -231,6 +401,59 @@ public struct StarterCatalogFailure: Equatable, Sendable {
     public let technicalDetails: String
 }
 
+/// A coarse, at-a-glance record of the last nearby-sync attempt, surfaced in
+/// the Diagnostics panel. The PRECISE failure cause lives in the unified log
+/// (subsystem `net.protest.riot`, category `sync`) via the Rust `tracing`
+/// spans; this summary intentionally carries only the coarse `MobileError`
+/// code and counts that fit on one card. Equatable so the panel only redraws
+/// when something actually changed.
+public struct SyncDiagnosticSummary: Equatable, Sendable {
+    /// Transport kind, e.g. "Nearby (Bluetooth)". Display-only.
+    public let transport: String
+    /// Last known outcome, e.g. "Failed" / "Caught up". Display-only.
+    public let outcome: String
+    /// Coarse FFI error code (e.g. "INVALID_INPUT") when the outcome was a
+    /// failure; `nil` on success or when no error surfaced. The detailed
+    /// variant (`NamespaceMismatch`, `InvalidBundle`, …) is in the log only.
+    public let errorCode: String?
+    public let framesSent: Int
+    public let framesReceived: Int
+    public let timestamp: Date
+
+    public init(
+        transport: String,
+        outcome: String,
+        errorCode: String?,
+        framesSent: Int,
+        framesReceived: Int,
+        timestamp: Date = Date()
+    ) {
+        self.transport = transport
+        self.outcome = outcome
+        self.errorCode = errorCode
+        self.framesSent = framesSent
+        self.framesReceived = framesReceived
+        self.timestamp = timestamp
+    }
+}
+
+/// A coarse record of the last newswire reply/reaction/editorial action
+/// outcome. As with ``SyncDiagnosticSummary``, the precise cause is in the log
+/// (category `newswire`); this carries only the coarse code for the card.
+public struct ReplyDiagnosticSummary: Equatable, Sendable {
+    /// What was attempted, e.g. "Reply" / "Reaction". Display-only.
+    public let action: String
+    /// Coarse FFI error code when the action was rejected; `nil` on success.
+    public let errorCode: String?
+    public let timestamp: Date
+
+    public init(action: String, errorCode: String?, timestamp: Date = Date()) {
+        self.action = action
+        self.errorCode = errorCode
+        self.timestamp = timestamp
+    }
+}
+
 /// Which tab is on screen, on its own observable object.
 ///
 /// PERFORMANCE CONTRACT: this deliberately does NOT live on `RiotAppModel`. The
@@ -289,6 +512,16 @@ public enum NearbyReannounceGate {
     }
 }
 
+public enum RiotToolApprovalResult: Equatable, Sendable {
+    case added
+    case notAdded(message: String)
+    case savedNeedsRestart(message: String)
+
+    public var wasAdded: Bool {
+        self == .added
+    }
+}
+
 @MainActor
 public final class RiotAppModel: ObservableObject {
     /// Tab selection. Observe this — not the app model — for destination changes;
@@ -304,6 +537,10 @@ public final class RiotAppModel: ObservableObject {
     }
 
     @Published public private(set) var space: RiotSpace?
+
+    /// Test-only injection at the repository-write boundary. Production leaves
+    /// this nil and always writes through `RiotProfileRepository`.
+    var trustDecisionWriterForTesting: ((String, String) throws -> Void)?
 
     /// The signed newswire `SpaceDescriptorV1` entry id of the selected
     /// community, when this device knows it. It is captured from
@@ -402,6 +639,17 @@ public final class RiotAppModel: ObservableObject {
     /// clean open. See ``RiotAppModel/recoveryNoticeMessage`` for the wording.
     @Published public private(set) var recoveryNotice: RecoveryReport?
 
+    /// The last nearby-sync attempt, surfaced in the Diagnostics panel. `nil`
+    /// until the first attempt. Updated from `SyncCoordinator` failures (and
+    /// successes) via ``recordSyncDiagnostic(_:)``. The detailed cause is in
+    /// the unified log; this is the one-card summary.
+    @Published public private(set) var lastSyncDiagnostic: SyncDiagnosticSummary?
+
+    /// The last newswire reply/reaction/editorial action, surfaced in the
+    /// Diagnostics panel. `nil` until the first attempt. The detailed cause is
+    /// in the unified log; this is the one-card summary.
+    @Published public private(set) var lastReplyDiagnostic: ReplyDiagnosticSummary?
+
     /// The arguments of the last `bootstrap` call, retained so `retryStarterCatalog`
     /// can re-attempt the one-time install after a catalog failure.
     private var lastBootstrapArgs: (
@@ -416,6 +664,9 @@ public final class RiotAppModel: ObservableObject {
     private var knownEntryIDs: Set<String>?
 
     private var repository: RiotProfileRepository?
+    #if DEBUG
+    public private(set) var reactionUITestConfiguration: ReactionUITestConfiguration?
+    #endif
     public let communityTransitionGate = CommunityTransitionGate()
 
     /// Read-only handle for the runtime host, which needs the live repository to
@@ -559,6 +810,44 @@ public final class RiotAppModel: ObservableObject {
         )
     }
 
+    /// The emergency wipe, built lazily against the SAME storage paths this
+    /// launch opened, so it can never be pointed at a stale directory.
+    ///
+    /// Nil only when there is no bootstrap yet (nothing to wipe) or the Keychain
+    /// store in use is not destructible — the UI-automation stub, for instance,
+    /// which must never be able to destroy a real key.
+    public var emergencyWipe: EmergencyWipeController? {
+        if let existing = cachedEmergencyWipe { return existing }
+        guard let args = lastBootstrapArgs,
+            let destructible = args.keyStore as? DestructibleSecretStore,
+            let base = try? (args.storageDirectory ?? Self.defaultStorageDirectory())
+        else { return nil }
+        let controller = EmergencyWipeController(
+            wipe: EmergencyWipe(
+                keyStore: destructible,
+                paths: WipePaths(
+                    databasePath: base.appendingPathComponent("riot.db").path,
+                    profilePath: base.appendingPathComponent("riot-profile.json").path,
+                    // The recovery system PRESERVES copies of profile state
+                    // rather than deleting it, so a wipe that spared this
+                    // directory would leave behind copies of what it destroyed.
+                    quarantineDirectory: base.appendingPathComponent("quarantine").path)))
+        cachedEmergencyWipe = controller
+        return controller
+    }
+
+    private var cachedEmergencyWipe: EmergencyWipeController?
+
+    /// Drops this launch's open profile after a wipe has committed. The store is
+    /// gone from disk and its key is destroyed, so continuing to hold the handle
+    /// would only keep unusable state alive.
+    public func releaseWipedProfile() {
+        repository = nil
+        space = nil
+        entries = []
+        cachedEmergencyWipe = nil
+    }
+
     /// "Start fresh": the last-resort recovery for a genuinely-unrecoverable
     /// error that survived every in-`open` degrade. It QUARANTINES the persisted
     /// snapshot and database aside — never deleting them, so the data stays on
@@ -590,6 +879,22 @@ public final class RiotAppModel: ObservableObject {
     public func openNearbySyncBoundary() throws -> MobileSyncSessionBoundary {
         guard let repository else { throw RepositoryError.profileClosed }
         return try repository.openSyncBoundary()
+    }
+
+    /// Records the outcome of the last nearby-sync attempt for the Diagnostics
+    /// panel. Called from the host that owns a `SyncCoordinator` whenever its
+    /// state changes to a terminal outcome (success or failure). The detailed
+    /// failure cause is already in the unified log via Rust `tracing`; this is
+    /// the one-card summary.
+    public func recordSyncDiagnostic(_ summary: SyncDiagnosticSummary) {
+        lastSyncDiagnostic = summary
+    }
+
+    /// Records the outcome of the last newswire reply/reaction/editorial action
+    /// for the Diagnostics panel. Called from the surface that owns the action
+    /// composer whenever an attempt completes (posted or rejected).
+    public func recordReplyDiagnostic(_ summary: ReplyDiagnosticSummary) {
+        lastReplyDiagnostic = summary
     }
 
     /// The profile a nearby pairing acts on: it announces the space this phone is
@@ -668,31 +973,68 @@ public final class RiotAppModel: ObservableObject {
                 starterPacks: resolvedPacks,
                 databasePath: databasePath
             )
-            self.repository = repository
-            // A self-healing open lands the person in a usable app; surface an
-            // honest, non-fatal notice about what it had to drop rather than the
-            // old dead RETRY. `nil` on a clean open.
-            recoveryNotice = repository.recovery
-            demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
-            // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
-            // opens a space on launch, so one scripted instance can host a space
-            // for another (fresh) instance to auto-join and sync. Seed BEFORE
-            // reload so the space exists by the time `me` is published and the
-            // readiness gate opens discovery — otherwise the host advertises
-            // spaceless. Off by default; opening a space is a person's decision.
-            if repository.currentSpace == nil,
-               ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
-                _ = try? repository.createPublicSpace(title: "Test Space")
+            // The database is created by Rust (rusqlite), so nothing in Swift
+            // ever declared its data-protection class — it inherited the platform
+            // default. Pin it, and its -wal/-shm sidecars where the newest
+            // entries live, AFTER the open so the files exist. Best-effort: a
+            // filesystem refusal must not turn a working profile into a dead
+            // launch, but it is recorded rather than swallowed silently.
+            do {
+                try DatabaseFileProtection.apply(databasePath: databasePath)
+            } catch {
+                Logger(subsystem: "net.protest.riot", category: "storage").error(
+                    "database protection class not applied: \(String(describing: error))")
             }
-            reload()
-            // LAST, and only on the success path: this is what lets the Connection
-            // screen start advertising, and it must not open until the space above
-            // is readable. See ``isProfileOpen``.
-            isProfileOpen = true
+            finishBootstrap(repository: repository) {
+                // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
+                // opens a space on launch, so one scripted instance can host a
+                // space for another. Off by default.
+                if repository.currentSpace == nil,
+                   ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
+                    _ = try? repository.createPublicSpace(title: "Test Space")
+                }
+            }
         } catch {
             errorMessage = String(describing: error)
         }
     }
+
+    private func finishBootstrap(
+        repository: RiotProfileRepository,
+        beforeReload: (() -> Void)? = nil
+    ) {
+        self.repository = repository
+        recoveryNotice = repository.recovery
+        demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
+        beforeReload?()
+        reload()
+        // LAST, and only on the success path: this opens nearby discovery after
+        // the active community and identity are readable.
+        isProfileOpen = true
+    }
+
+    #if DEBUG
+    /// Installs the reader half of the closed two-profile reactions fixture.
+    /// The pair factory performs a real joined-community sync before this normal
+    /// reload path is allowed to publish any screen state.
+    public func bootstrapReactionUITestFixture(
+        baseDirectory: URL,
+        keyStore: WrappingKeyStore,
+        configuration: ReactionUITestConfiguration
+    ) {
+        guard repository == nil else { return }
+        do {
+            let pair = try RiotProfileRepository.makeReactionUITestPair(
+                baseDirectory: baseDirectory,
+                keyStore: keyStore
+            )
+            reactionUITestConfiguration = configuration
+            finishBootstrap(repository: pair.reader)
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+    #endif
 
     /// Recovery action for the §4.7 "Catalog/package failed" state: clears the
     /// failure and re-attempts the one-time starter install with the same
@@ -956,6 +1298,202 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    // MARK: - Relay pull (the "leave the room, still connected" path)
+
+    /// The human outcome of the last relay pull, or `nil` before one runs. It
+    /// leads with the COMMUNITY — its name, that you're now in it, how many people
+    /// and posts are there — not with protocol counts. The card reads this to say
+    /// "you're in River City News · 4 posts · 3 people" and to offer Open. When
+    /// ``RelaySyncResult/isWalkInReady`` is true the community was adopted into the
+    /// chooser and can be opened; when false the data landed durably but there was
+    /// no community to walk into yet (surfaced honestly, never as a fake door).
+    @Published public private(set) var relaySyncResult: RelaySyncResult?
+
+    /// True while a relay pull is in flight, so the three card placements (Home,
+    /// Transport, Onboarding) all reflect ONE shared pull rather than firing their
+    /// own. Published so every placement disables its button together.
+    @Published public private(set) var isRelaySyncing = false
+
+    /// A plain-language reason the last pull could not connect, or `nil`. Separate
+    /// from ``errorMessage`` so a relay hiccup speaks on the relay card, not as an
+    /// app-wide alert.
+    @Published public private(set) var relaySyncError: String?
+
+    /// Per-community "last synced" wall-clock, keyed by lowercase namespace hex.
+    /// Held in memory (published) — reassurance that the place is alive and
+    /// current, read through ``lastSyncedText(for:)``.
+    @Published public private(set) var lastSyncedByNamespace: [String: Date] = [:]
+
+    /// Records that this community synced at `date`, so the card and the community
+    /// can show "Synced just now".
+    public func recordSynced(namespaceID: String, at date: Date = Date()) {
+        lastSyncedByNamespace[namespaceID.lowercased()] = date
+    }
+
+    /// "Synced just now" / "Synced 5m ago" / "Synced 2h ago", or `nil` if this
+    /// community has no recorded sync yet. Reassurance you're up to date with
+    /// these people — not a transport receipt.
+    public func lastSyncedText(for namespaceID: String) -> String? {
+        guard let date = lastSyncedByNamespace[namespaceID.lowercased()] else { return nil }
+        let seconds = max(0, Date().timeIntervalSince(date))
+        if seconds < 45 { return "Synced just now" }
+        if seconds < 3600 { return "Synced \(Int(seconds / 60))m ago" }
+        if seconds < 86_400 { return "Synced \(Int(seconds / 3600))h ago" }
+        return "Synced \(Int(seconds / 86_400))d ago"
+    }
+
+    /// Dismisses the relay pull result banner (the data stays; this only clears
+    /// the card's success state).
+    public func dismissRelaySyncResult() {
+        relaySyncResult = nil
+        relaySyncError = nil
+    }
+
+    /// Pulls the built-in community from the anchor relay INTO THE DURABLE profile
+    /// and turns the result into a place the person can walk into.
+    ///
+    /// The whole point of routing this through the app model (rather than the old
+    /// throwaway `AnchorRelaySyncModel`) is that the pull now lands in the
+    /// persisted store: the community becomes real, appears in "Your communities",
+    /// and survives a relaunch. After the network leg it discovers what actually
+    /// arrived, adopts the richest community it found (a full newswire wire when
+    /// there is one, otherwise an alert board), records "synced just now", and
+    /// publishes a human result the card leads with. Nothing here weakens the
+    /// pull's security — the repository call verifies every entry through the
+    /// canonical gate exactly as before.
+    @MainActor
+    public func syncFromRelay() async {
+        guard let repository, !isRelaySyncing else { return }
+        isRelaySyncing = true
+        relaySyncError = nil
+        defer { isRelaySyncing = false }
+
+        let nodeId = AnchorRelayDefaults.relayNodeId
+        let ticket = AnchorRelayDefaults.communityTicket
+        let now = UInt64(Date().timeIntervalSince1970)
+        // The DURABLE profile handle (Sendable), so the blocking network leg runs
+        // off the main actor while importing into the PERSISTED store.
+        let durableProfile = repository.durableProfile
+
+        // The network + verify + durable import leg, off the main actor.
+        let outcome: AnchorSyncOutcome
+        do {
+            outcome = try await Task.detached {
+                let net = try bindNetRuntime()
+                return try net.syncWithAnchor(
+                    profile: durableProfile,
+                    anchorHint: nodeId,
+                    ticketBytes: ticket,
+                    nowUnix: now
+                )
+            }.value
+        } catch {
+            RelaySyncLog.pullFailed(error: error)
+            relaySyncError = AnchorRelayFailure.message(for: error)
+            return
+        }
+
+        if let refused = outcome.namespaces.first(where: { $0.refusal != nil }),
+           let refusal = refused.refusal
+        {
+            RelaySyncLog.pullRefused(namespace: refused.namespaceId, refusal: refusal)
+            relaySyncError = AnchorRelayFailure.message(forRefusal: refusal)
+            return
+        }
+
+        let imported = outcome.namespaces.reduce(0) { $0 + Int($1.imported) }
+        RelaySyncLog.pullLanded(root: outcome.root, imported: imported, namespaces: outcome.namespaces)
+
+        // What actually arrived, richest-first: a full newswire community (a wire
+        // + people project) beats an alert-only namespace; among equals, more
+        // content wins.
+        let pulledNamespaces = outcome.namespaces.map(\.namespaceId)
+        let candidates: [SyncedCommunityCandidate]
+        do {
+            candidates = try repository.discoverSyncedCommunities(
+                pulledNamespaceIDs: pulledNamespaces)
+        } catch {
+            RelaySyncLog.discoverFailed(error: error)
+            candidates = []
+        }
+        RelaySyncLog.discovered(candidates)
+        let best = candidates.max { lhs, rhs in
+            let l = (lhs.descriptorEntryId != nil ? 1 : 0, Int(lhs.postCount + lhs.alertCount))
+            let r = (rhs.descriptorEntryId != nil ? 1 : 0, Int(rhs.postCount + rhs.alertCount))
+            return l < r
+        }
+
+        let syncedAt = Date()
+        guard let best else {
+            // The data crossed the wire and persists, but nothing here is a
+            // walk-into-able community yet. Say so honestly — no fake door.
+            relaySyncResult = RelaySyncResult(
+                communityName: AnchorRelayDefaults.communityDisplayName,
+                namespaceID: nil,
+                peopleCount: 0,
+                postCount: imported,
+                syncedAt: syncedAt,
+                isWalkInReady: false
+            )
+            return
+        }
+
+        let name = best.name ?? AnchorRelayDefaults.communityDisplayName
+        let people = Int(best.contributorCount)
+        let posts = Int(max(best.postCount, best.alertCount))
+
+        // Adopt it so it appears in "Your communities" and is navigable. If it is
+        // already held (a re-sync), don't duplicate the row.
+        let held = (try? repository.listCommunities())?.map(\.namespaceId) ?? []
+        let alreadyHeld = held.contains {
+            $0.caseInsensitiveCompare(best.namespaceId) == .orderedSame
+        }
+        do {
+            if alreadyHeld {
+                _ = try repository.switchToCommunity(namespaceID: best.namespaceId)
+            } else if let descriptor = best.descriptorEntryId {
+                _ = try repository.joinAdditionalCommunity(
+                    RiotSpace(namespaceID: best.namespaceId, title: name),
+                    descriptorEntryID: descriptor)
+            } else {
+                _ = try repository.adoptSyncedNamespace(
+                    RiotSpace(namespaceID: best.namespaceId, title: name))
+            }
+            recordSynced(namespaceID: best.namespaceId, at: syncedAt)
+            reload()
+            errorMessage = nil
+            relaySyncResult = RelaySyncResult(
+                communityName: name,
+                namespaceID: best.namespaceId,
+                peopleCount: people,
+                postCount: posts,
+                syncedAt: syncedAt,
+                isWalkInReady: true
+            )
+        } catch {
+            // Adoption failed but the verified entries are already durable. Report
+            // the connection + what arrived, without a door that won't open.
+            RelaySyncLog.adoptFailed(namespace: best.namespaceId, error: error)
+            relaySyncResult = RelaySyncResult(
+                communityName: name,
+                namespaceID: nil,
+                peopleCount: people,
+                postCount: posts,
+                syncedAt: syncedAt,
+                isWalkInReady: false
+            )
+        }
+    }
+
+    /// Walks the person into a relay-pulled community: selects it and lands on its
+    /// Home, closing the loop from the relay card with no dead end. Also records a
+    /// fresh sync stamp so the community reads "Synced just now" as you arrive.
+    public func openSyncedCommunity(namespaceID: String) {
+        recordSynced(namespaceID: namespaceID)
+        switchCommunity(namespaceID: namespaceID)
+        select(.home)
+    }
+
     /// The outcome of the last `riot://open?...` verify link the app was handed,
     /// or `nil` when none is pending. The shell presents it as an HONEST verify
     /// result (see ``RiotOpenOutcome``) — a "verified" badge only for a post this
@@ -1208,6 +1746,12 @@ public final class RiotAppModel: ObservableObject {
     /// selecting or dismissing closes it.
     @Published public var isCommunityChooserPresented = false
 
+    /// Whether the Discover front door (browse communities you have no link for)
+    /// is presented. Raised from the chooser's "Discover communities" row and the
+    /// launch screen; the surface routes joining back through `commitJoin` /
+    /// the paste-QR sheet. See `RiotAppModel.requestDiscover` in DiscoverView.swift.
+    @Published public var isDiscoverPresented = false
+
     /// The launch state the shell renders before any route: loading while the
     /// profile opens, no-community when there is none, the community's Home when
     /// there is one, or in-place recovery when a retained one cannot open. Never
@@ -1320,20 +1864,226 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
-    /// Trusts an app in this space so everyone here can use it, then refreshes
-    /// the listing so the row flips from "Review" to "Open".
-    public func trustApp(appID: String) {
-        guard let repository else { return }
+    /// Trusts an app in the community the approval sheet captured. The explicit
+    /// namespace keeps a sheet opened in one community from approving the same
+    /// app after the selected community changes.
+    @discardableResult
+    public func trustApp(appID: String, expectedNamespaceID: String) -> Bool {
+        approveTool(appID: appID, expectedNamespaceID: expectedNamespaceID).wasAdded
+    }
+
+    /// The result-bearing approval path used by the permission sheet. A durable
+    /// decision that could not be verified after reopening is not an ordinary
+    /// failure: the bytes on disk already say "approved", so the sheet must ask
+    /// for a restart and must never claim that nothing changed.
+    public func approveTool(
+        appID: String,
+        expectedNamespaceID: String
+    ) -> RiotToolApprovalResult {
+        guard repository != nil else {
+            return .notAdded(message: "The profile is not open. Nothing changed. Try again.")
+        }
         do {
-            try repository.trustApp(appID: appID)
+            // Keep the repository retain inside a separate stack frame. If Rust
+            // finalized unsuccessfully, that frame unwinds before recovery
+            // releases and reopens the SQLite-backed profile.
+            try persistTrustDecision(
+                appID: appID,
+                expectedNamespaceID: expectedNamespaceID
+            )
             errorMessage = nil
             refreshApps()
+            refreshOrganizerState()
+            return .added
+        } catch let RepositoryError.durableDecisionNeedsReopen(
+            namespaceID,
+            durableAppID,
+            trusted
+        ) {
+            let result = resolveDurableTrustDecision(
+                namespaceID: namespaceID,
+                appID: durableAppID,
+                trusted: trusted,
+                requestedNamespaceID: expectedNamespaceID,
+                requestedAppID: appID
+            )
+            refreshOrganizerState()
+            return result
         } catch {
             // Not `perform`: its `String(describing:)` is exactly how "InvalidInput"
             // reached a person who had done nothing wrong.
             errorMessage = Self.approvalFailureMessage(error)
+            refreshApps()
+            refreshOrganizerState()
+            return .notAdded(
+                message: errorMessage ?? "The tool couldn’t be added. Nothing changed. Try again."
+            )
         }
-        refreshOrganizerState()
+    }
+
+    private func persistTrustDecision(
+        appID: String,
+        expectedNamespaceID: String
+    ) throws {
+        if let trustDecisionWriterForTesting {
+            try trustDecisionWriterForTesting(appID, expectedNamespaceID)
+            return
+        }
+        guard let repository else { throw RepositoryError.profileClosed }
+        try repository.trustApp(
+            appID: appID,
+            expectedNamespaceID: expectedNamespaceID
+        )
+    }
+
+    /// Compatibility path for callers that act immediately rather than keeping
+    /// a community-bound approval sheet. Capture the namespace before delegating
+    /// so the repository still receives the same stale-action guard.
+    @discardableResult
+    public func trustApp(appID: String) -> Bool {
+        guard let namespaceID = repository?.currentSpace?.namespaceID else {
+            return false
+        }
+        return trustApp(appID: appID, expectedNamespaceID: namespaceID)
+    }
+
+    /// Reopens after the repository reports that the approval is already on
+    /// disk but could not be projected into the live Rust session. A durable
+    /// approval is success only after the reopened repository proves the exact
+    /// community, app, and trust state.
+    func recoverDurableTrustDecision(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> Bool {
+        let args = lastBootstrapArgs
+        let payloadMatchesRequest = Self.durableTrustPayloadMatchesRequest(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            requestedNamespaceID: requestedNamespaceID,
+            requestedAppID: requestedAppID
+        )
+
+        clearRepositoryProjectionForReopen()
+        guard let args else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        bootstrap(
+            storageDirectory: args.storageDirectory,
+            keyStore: args.keyStore,
+            starterPacks: args.starterPacks,
+            starterPackResolver: args.starterPackResolver
+        )
+
+        guard let repository else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        let reopenedApps = (try? repository.spaceApps()) ?? []
+        let decisionIsPresent = Self.durableTrustDecisionIsPresent(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            currentSpace: repository.currentSpace,
+            apps: reopenedApps
+        )
+        apps = reopenedApps
+        guard payloadMatchesRequest, decisionIsPresent else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        errorMessage = nil
+        return true
+    }
+
+    /// Handles the typed repository signal emitted after a durable write but a
+    /// failed live finalize. This is a shipping path (not a test seam): the
+    /// repository is released, the profile is reopened, and the exact grant is
+    /// verified before success is reported.
+    func resolveDurableTrustDecision(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> RiotToolApprovalResult {
+        if recoverDurableTrustDecision(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            requestedNamespaceID: requestedNamespaceID,
+            requestedAppID: requestedAppID
+        ) {
+            return .added
+        }
+        return .savedNeedsRestart(
+            message: errorMessage ?? Self.durableTrustRecoveryFailureMessage
+        )
+    }
+
+    /// Clears every value derived from the repository before reopening it. This
+    /// is one coherent projection transition: a failed reopen can never leave a
+    /// community, person, or tool from the closed profile on screen.
+    private func clearRepositoryProjectionForReopen() {
+        // RiotDemoSpaceLoader owns the repository strongly. Release it first so
+        // the old SQLite/core session is truly gone before bootstrap reopens the
+        // same durable profile.
+        demoLoader = nil
+        repository = nil
+        space = nil
+        newswireDescriptorEntryID = nil
+        communityUnavailable = nil
+        entries = []
+        apps = []
+        followedSites = []
+        displayNames = [:]
+        isDemoMode = false
+        me = nil
+        claimedName = nil
+        arrivals = []
+        knownEntryIDs = nil
+        communities = []
+        canApproveApps = false
+        isLegacyProfile = false
+        recoveryNotice = nil
+        openOutcome = nil
+        relaySyncResult = nil
+        relaySyncError = nil
+        isRelaySyncing = false
+        lastSyncedByNamespace = [:]
+        connectionStatus = .offline
+        isProfileOpen = false
+    }
+
+    static func durableTrustPayloadMatchesRequest(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> Bool {
+        trusted
+            && namespaceID.caseInsensitiveCompare(requestedNamespaceID) == .orderedSame
+            && appID.caseInsensitiveCompare(requestedAppID) == .orderedSame
+    }
+
+    static func durableTrustDecisionIsPresent(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        currentSpace: RiotSpace?,
+        apps: [RiotSpaceApp]
+    ) -> Bool {
+        guard currentSpace?.namespaceID.caseInsensitiveCompare(namespaceID) == .orderedSame,
+              let app = apps.first(where: {
+                  $0.appIDHex.caseInsensitiveCompare(appID) == .orderedSame
+              })
+        else { return false }
+        return app.trusted == trusted
     }
 
     /// Adds a tool the organizer chose from a file, then refreshes Tools so the
@@ -1341,14 +2091,17 @@ public final class RiotAppModel: ObservableObject {
     /// tool is UNTRUSTED until the organizer approves it in `AppReviewSheet`; this
     /// method never trusts. A rejected file surfaces a plain message rather than
     /// the silent no-op that let a failed install "just not appear".
-    public func installTool(manifest: Data, bundle: Data) {
-        guard let repository else { return }
+    @discardableResult
+    public func installTool(manifest: Data, bundle: Data) -> RiotSpaceApp? {
+        guard let repository else { return nil }
         do {
-            _ = try repository.installApp(manifest: manifest, bundle: bundle)
+            let app = try repository.installApp(manifest: manifest, bundle: bundle)
             errorMessage = nil
             refreshApps()
+            return app
         } catch {
             errorMessage = Self.toolImportFailureMessage(error)
+            return nil
         }
     }
 
@@ -1358,6 +2111,10 @@ public final class RiotAppModel: ObservableObject {
     static func toolImportFailureMessage(_ error: Error) -> String {
         "That file couldn’t be added as a tool. Choose the tool’s manifest, then its bundle."
     }
+
+    private static let durableTrustRecoveryFailureMessage =
+        "The tool approval was saved, but Riot couldn’t verify it after reopening "
+        + "your profile. Restart Riot and check the tool before trying again."
 
     /// Revokes trust for an app in the current space. Organizer-gated like
     /// `trustApp` (a member turning an app off has the same organizer gate as

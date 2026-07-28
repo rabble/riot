@@ -123,13 +123,26 @@ public enum ActiveAlertsPresentation: Equatable, Sendable {
     }
 }
 
+/// The closed set of blocks an active community's Home draws, and their one
+/// canonical order. `Section` is TOTAL: Home renders these cases and nothing
+/// else. That totality is the contract — a block drawn outside this model has no
+/// pinned position and nothing can catch it drifting to the top of the screen,
+/// which is exactly how a "find a community over the internet" acquisition card
+/// came to sit above the community's own alerts and newswire. A person standing
+/// inside a room is asking "what is happening HERE?", so the most valuable rows
+/// answer that; the way to reach some OTHER community lives where a person has
+/// none yet (the onboarding welcome) or has gone looking (the Nearby route).
 public enum HomePresentation {
-    public enum Section: Equatable, Sendable {
+    public enum Section: Equatable, Hashable, Sendable, CaseIterable {
         case activeAlerts
         case post
         case newswire
         case tools
     }
+
+    /// Top to bottom, whatever is present: the community's urgent broadcast, the
+    /// way to add to it, what is happening, then what there is to do about it.
+    public static let canonicalOrder: [Section] = [.activeAlerts, .post, .newswire, .tools]
 
     public static func sections(
         wireHasPosts: Bool,

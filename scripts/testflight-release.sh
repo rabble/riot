@@ -27,6 +27,27 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# ONE RELEASE BUILD AT A TIME, PER CHECKOUT.
+#
+# All three release scripts regenerate build/generated/riot-ffi and write
+# build/native — shared paths. Running two at once means one deletes the
+# bindings the other is mid-compile against, and the failure looks like a
+# missing file rather than a race:
+#   error opening input file '.../build/generated/riot-ffi/riot_ffi.swift'
+# mkdir is atomic on every filesystem this runs on, so it is the lock.
+LOCK_DIR="$ROOT/build/.release-lock"
+mkdir -p "$ROOT/build"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "ERROR: another release build is already running in this checkout." >&2
+  echo "       ($LOCK_DIR exists — remove it if a previous run was killed.)" >&2
+  exit 1
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+
+# shellcheck source=scripts/lib/asc-key.sh
+. "$ROOT/scripts/lib/asc-key.sh"
+
 SCHEME="Riot"
 PROJECT="apps/ios/Riot.xcodeproj"
 EXPORT_OPTS="apps/ios/ExportOptions.plist"
@@ -48,10 +69,36 @@ if [ -n "$(git status --porcelain -- apps/ios crates)" ] && [ "${ALLOW_DIRTY:-0}
   exit 1
 fi
 
-echo "==> Riot version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' apps/ios/Riot/Info.plist 2>/dev/null || echo 0.1), build $BUILD_NUMBER, at $(git rev-parse --short HEAD)"
+# The version comes from MARKETING_VERSION in the project, not Info.plist:
+# GENERATE_INFOPLIST_FILE is on, so the plist has no CFBundleShortVersionString
+# and the old lookup always fell through to a hardcoded "0.1" — a log that
+# quietly disagreed with what was being archived.
+MARKETING_VERSION="$(sed -n 's/.*MARKETING_VERSION = \([0-9.]*\);.*/\1/p' apps/ios/Riot.xcodeproj/project.pbxproj | head -1)"
+echo "==> Riot version ${MARKETING_VERSION:-unknown}, build $BUILD_NUMBER, at $(git rev-parse --short HEAD)"
 
-echo "==> native core (device arm64 slice)"
-sh scripts/conference/build-native-core.sh
+echo "==> native core (device arm64 slice, net-enabled)"
+# The app links the FFI-owned iroh runtime (bindNetRuntime / MobileNetRuntime /
+# sync_with_anchor) plus the app-data seam. build-native-core.sh builds those
+# NET-FREE, so its staticlib is missing those symbols and the archive fails to
+# link. Build the device slice with the `net` feature and net bindings here so
+# the archived app is actually network-capable. -framework SystemConfiguration
+# is already in the target's OTHER_LDFLAGS.
+RIOT_FFI_NET_BINDINGS=1 cargo run --locked --package xtask -- generate-bindings
+cargo build --locked -p riot-ffi --lib --release --features net --target aarch64-apple-ios
+mkdir -p build/native/ios-device
+install -m 0644 target/aarch64-apple-ios/release/libriot_ffi.a \
+  build/native/ios-device/libriot_ffi.a
+
+# ASC API-key auth lets archive/export do cloud signing (distribution cert +
+# profile) without a signed-in Xcode account — the CI path.
+ASC_AUTH_ARGS=()
+if [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] && [ -n "${ASC_KEY_PATH:-}" ]; then
+  ASC_AUTH_ARGS=(
+    -authenticationKeyID "$ASC_KEY_ID"
+    -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+    -authenticationKeyPath "$ASC_KEY_PATH"
+  )
+fi
 
 echo "==> archive (Release, generic iOS device)"
 rm -rf "$ARCHIVE"
@@ -62,6 +109,7 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
   -allowProvisioningUpdates \
+  "${ASC_AUTH_ARGS[@]}" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
 echo "==> export signed .ipa"
@@ -69,7 +117,8 @@ xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist "$EXPORT_OPTS" \
   -exportPath "$OUT" \
-  -allowProvisioningUpdates
+  -allowProvisioningUpdates \
+  "${ASC_AUTH_ARGS[@]}"
 
 IPA="$(ls "$OUT"/*.ipa 2>/dev/null | head -1 || true)"
 if [ -z "$IPA" ]; then echo "ERROR: no .ipa produced in $OUT" >&2; exit 1; fi
@@ -80,9 +129,7 @@ UPLOAD_CMD="xcrun altool --upload-app --type ios --file \"$IPA\" \
 
 if [ "${UPLOAD:-0}" = "1" ]; then
   : "${ASC_KEY_ID:?set ASC_KEY_ID}"; : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"; : "${ASC_KEY_PATH:?set ASC_KEY_PATH}"
-  # altool finds the key by ID under ./private_keys, ~/.appstoreconnect/private_keys, etc.
-  mkdir -p "$HOME/.appstoreconnect/private_keys"
-  cp "$ASC_KEY_PATH" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+  riot_install_asc_key "$ASC_KEY_PATH" "$ASC_KEY_ID" "$HOME/.appstoreconnect/private_keys"
   echo "==> uploading to App Store Connect / TestFlight"
   xcrun altool --upload-app --type ios --file "$IPA" \
     --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"

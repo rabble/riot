@@ -1,7 +1,7 @@
 use super::database::{map_sqlite_error, DatabaseError};
 use rusqlite::{Connection, TransactionBehavior};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 const SCHEMA_MIGRATIONS_SQL: &str = "CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY NOT NULL CHECK (version > 0)
@@ -118,6 +118,47 @@ const FORGOTTEN_ENTRIES_SQL: &str = "CREATE TABLE forgotten_entries (
         REFERENCES accepted_entries(namespace_id, entry_id) ON DELETE CASCADE,
     FOREIGN KEY(namespace_id, entry_id, forgotten_generation)
         REFERENCES forget_events(namespace_id, entry_id, forgotten_generation)
+) STRICT, WITHOUT ROWID";
+
+const GOVERNANCE_JOURNAL_SQL: &str = "CREATE TABLE governance_journal (
+    namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+    record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+    kind INTEGER NOT NULL CHECK (kind BETWEEN 0 AND 21),
+    actor_id BLOB NOT NULL CHECK (length(actor_id) = 32),
+    sequence_be BLOB NOT NULL CHECK (length(sequence_be) = 8),
+    authorizing_fingerprint BLOB NOT NULL CHECK (length(authorizing_fingerprint) = 32),
+    record_bytes BLOB NOT NULL CHECK (length(record_bytes) > 0),
+    accepted_generation INTEGER NOT NULL CHECK (accepted_generation >= 0),
+    PRIMARY KEY(namespace_id, record_id)
+) STRICT, WITHOUT ROWID";
+const GOVERNANCE_BY_TARGET_SQL: &str = "CREATE TABLE governance_by_target (
+    namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+    kind INTEGER NOT NULL CHECK (kind BETWEEN 0 AND 21),
+    target_id BLOB NOT NULL CHECK (length(target_id) = 32),
+    record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+    PRIMARY KEY(namespace_id, kind, target_id, record_id),
+    FOREIGN KEY(namespace_id, record_id) REFERENCES governance_journal(namespace_id, record_id) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID";
+const CAPABILITY_LINEAGE_SQL: &str = "CREATE TABLE capability_lineage (
+    namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+    child_fingerprint BLOB NOT NULL CHECK (length(child_fingerprint) = 32),
+    parent_fingerprint BLOB NOT NULL CHECK (length(parent_fingerprint) = 32),
+    PRIMARY KEY(namespace_id, child_fingerprint)
+) STRICT, WITHOUT ROWID";
+const REVOCATION_INDEX_SQL: &str = "CREATE TABLE revocation_index (
+    namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+    target_fingerprint BLOB NOT NULL CHECK (length(target_fingerprint) = 32),
+    record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+    PRIMARY KEY(namespace_id, target_fingerprint, record_id),
+    FOREIGN KEY(namespace_id, record_id) REFERENCES governance_journal(namespace_id, record_id) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID";
+const ACTION_HEADS_SQL: &str = "CREATE TABLE action_heads (
+    namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+    actor_id BLOB NOT NULL CHECK (length(actor_id) = 32),
+    receiver_id BLOB NOT NULL CHECK (length(receiver_id) = 32),
+    action_hash BLOB NOT NULL CHECK (length(action_hash) = 32),
+    sequence_be BLOB NOT NULL CHECK (length(sequence_be) = 8),
+    PRIMARY KEY(namespace_id, actor_id, receiver_id)
 ) STRICT, WITHOUT ROWID";
 
 const MIGRATION_ONE: &str = r#"
@@ -251,6 +292,51 @@ const MIGRATION_TWO: &str = r#"
     PRAGMA user_version = 2;
 "#;
 
+const MIGRATION_THREE: &str = r#"
+    CREATE TABLE governance_journal (
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+        kind INTEGER NOT NULL CHECK (kind BETWEEN 0 AND 21),
+        actor_id BLOB NOT NULL CHECK (length(actor_id) = 32),
+        sequence_be BLOB NOT NULL CHECK (length(sequence_be) = 8),
+        authorizing_fingerprint BLOB NOT NULL CHECK (length(authorizing_fingerprint) = 32),
+        record_bytes BLOB NOT NULL CHECK (length(record_bytes) > 0),
+        accepted_generation INTEGER NOT NULL CHECK (accepted_generation >= 0),
+        PRIMARY KEY(namespace_id, record_id)
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE governance_by_target (
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        kind INTEGER NOT NULL CHECK (kind BETWEEN 0 AND 21),
+        target_id BLOB NOT NULL CHECK (length(target_id) = 32),
+        record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+        PRIMARY KEY(namespace_id, kind, target_id, record_id),
+        FOREIGN KEY(namespace_id, record_id) REFERENCES governance_journal(namespace_id, record_id) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE capability_lineage (
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        child_fingerprint BLOB NOT NULL CHECK (length(child_fingerprint) = 32),
+        parent_fingerprint BLOB NOT NULL CHECK (length(parent_fingerprint) = 32),
+        PRIMARY KEY(namespace_id, child_fingerprint)
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE revocation_index (
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        target_fingerprint BLOB NOT NULL CHECK (length(target_fingerprint) = 32),
+        record_id BLOB NOT NULL CHECK (length(record_id) = 32),
+        PRIMARY KEY(namespace_id, target_fingerprint, record_id),
+        FOREIGN KEY(namespace_id, record_id) REFERENCES governance_journal(namespace_id, record_id) ON DELETE CASCADE
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE action_heads (
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        actor_id BLOB NOT NULL CHECK (length(actor_id) = 32),
+        receiver_id BLOB NOT NULL CHECK (length(receiver_id) = 32),
+        action_hash BLOB NOT NULL CHECK (length(action_hash) = 32),
+        sequence_be BLOB NOT NULL CHECK (length(sequence_be) = 8),
+        PRIMARY KEY(namespace_id, actor_id, receiver_id)
+    ) STRICT, WITHOUT ROWID;
+    INSERT INTO schema_migrations(version) VALUES (3);
+    PRAGMA user_version = 3;
+"#;
+
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), DatabaseError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -280,6 +366,11 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), DatabaseError> 
     if found < 2 {
         transaction
             .execute_batch(MIGRATION_TWO)
+            .map_err(|_| DatabaseError::MigrationFailed)?;
+    }
+    if found < 3 {
+        transaction
+            .execute_batch(MIGRATION_THREE)
             .map_err(|_| DatabaseError::MigrationFailed)?;
     }
 
@@ -393,6 +484,9 @@ fn validate_structure(connection: &Connection) -> Result<u32, DatabaseError> {
     if found >= 2 {
         validate_evidence_structure(connection)?;
     }
+    if found >= 3 {
+        validate_governance_structure(connection)?;
+    }
     let meta: (u32, u32, u32, i64, i64) = connection
         .query_row(
             "SELECT COUNT(*),
@@ -456,6 +550,19 @@ fn validate_evidence_structure(connection: &Connection) -> Result<(), DatabaseEr
         .map_err(|_| DatabaseError::CorruptDatabase)?;
     if meta.0 != 1 || meta.1 < 0 || meta.2 <= 0 || meta.3 < 0 {
         return Err(DatabaseError::CorruptDatabase);
+    }
+    Ok(())
+}
+
+fn validate_governance_structure(connection: &Connection) -> Result<(), DatabaseError> {
+    for (table, sql) in [
+        ("governance_journal", GOVERNANCE_JOURNAL_SQL),
+        ("governance_by_target", GOVERNANCE_BY_TARGET_SQL),
+        ("capability_lineage", CAPABILITY_LINEAGE_SQL),
+        ("revocation_index", REVOCATION_INDEX_SQL),
+        ("action_heads", ACTION_HEADS_SQL),
+    ] {
+        validate_schema_definition(connection, table, sql, true)?;
     }
     Ok(())
 }
@@ -581,4 +688,25 @@ pub(crate) fn schema_version_in(connection: &Connection) -> rusqlite::Result<u32
         [],
         |row| row.get(0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::store::{DatabaseConfig, RiotDatabase};
+
+    #[test]
+    fn fresh_database_is_governance_schema_v3() {
+        let path = std::env::temp_dir().join(format!(
+            "riot-governance-schema-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let database = RiotDatabase::open(&path, DatabaseConfig::default()).unwrap();
+        assert_eq!(database.schema_version().unwrap(), 3);
+        drop(database);
+        let _ = std::fs::remove_file(path);
+    }
 }

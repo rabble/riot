@@ -15,7 +15,7 @@
         "ios": ["apps/ios/Riot/RiotApp.swift"],
         "ipados": ["apps/ios/Riot/RiotApp.swift"],
         "macos": ["apps/macos/Riot/RiotMacApp.swift"],
-        "android": ["apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt"]
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt"]
       }
     },
     {
@@ -32,7 +32,7 @@
         "ios": ["apps/ios/Riot/QRScannerView.swift"],
         "ipados": ["apps/ios/Riot/QRScannerView.swift"],
         "macos": ["apps/ios/Riot/QRScannerView.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
-        "android": ["apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt", "apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt"]
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt"]
       }
     },
     {
@@ -49,7 +49,7 @@
         "ios": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"],
         "ipados": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"],
         "macos": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
-        "android": ["apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt", "apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt", "apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt"]
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt"]
       }
     },
     {
@@ -66,7 +66,7 @@
         "ios": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"],
         "ipados": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"],
         "macos": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "apps/macos/Riot.xcodeproj/project.pbxproj", "crates/riot-transport/src/lib.rs"],
-        "android": ["apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt", "apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyTransport.kt", "crates/riot-transport/src/lib.rs"]
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyTransport.kt", "crates/riot-transport/src/lib.rs"]
       }
     },
     {
@@ -83,7 +83,7 @@
         "ios": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"],
         "ipados": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"],
         "macos": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
-        "android": ["crates/riot-core/src/site/follow.rs", "apps/android/app/src/main/kotlin/org/riot/evidence/FollowSite.kt", "apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt"]
+        "android": ["crates/riot-core/src/site/follow.rs", "apps/android/app/src/main/kotlin/net/protest/riot/FollowSite.kt", "apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt"]
       }
     }
   ]

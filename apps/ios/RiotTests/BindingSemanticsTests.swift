@@ -208,6 +208,103 @@ final class BindingSemanticsTests: XCTestCase {
         XCTAssertEqual(try migrated.currentEntries().map(\.entryID), [signed.entryID])
         XCTAssertEqual(try sealedIdentityBytes(in: snapshotURL).count, 112)
     }
+
+    // MARK: - Starter-catalog generation (WU-001N)
+
+    /// A fresh first save records the current starter-catalog generation (2)
+    /// alongside the sealed identity. The exact retained internal `Option<u8>`
+    /// is proven by Rust white-box tests; here we pin the durable JSON marker.
+    func testFreshFirstSaveRecordsStarterCatalogGenerationTwo() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
+
+        _ = try RiotProfileRepository.open(storage: storage, keyStore: TestWrappingKeyStore())
+
+        XCTAssertNotNil(try sealedIdentityBytes(in: snapshotURL))
+        XCTAssertEqual(try starterCatalogGeneration(in: snapshotURL), 2)
+    }
+
+    /// A legacy sealed snapshot with the generation key deleted is generation 1
+    /// (absence). Reopening and performing a permitted save must LEAVE the key
+    /// absent — never materialize `1` — because absence itself is generation 1.
+    func testLegacySealedSnapshotKeepsGenerationKeyAbsentAfterPermittedSave() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
+        let keys = TestWrappingKeyStore()
+        _ = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        try removeStarterCatalogGeneration(from: snapshotURL)
+        XCTAssertFalse(try snapshotContainsGenerationKey(in: snapshotURL))
+
+        let reopened = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        _ = try reopened.createPublicSpace(title: "Legacy sealed space")
+
+        XCTAssertFalse(try snapshotContainsGenerationKey(in: snapshotURL))
+    }
+
+    /// An explicit generation-1 snapshot reopens successfully and remains
+    /// durably encoded as `1` across a permitted save (Task 1 proves the
+    /// internal `Some(1)` retention).
+    func testExplicitGenerationOneRemainsOneAcrossReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
+        let keys = TestWrappingKeyStore()
+        _ = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        try setStarterCatalogGeneration(1, in: snapshotURL)
+
+        let reopened = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        _ = try reopened.createPublicSpace(title: "Explicit generation one")
+
+        XCTAssertEqual(try starterCatalogGeneration(in: snapshotURL), 1)
+    }
+
+    /// A sealed legacy snapshot reopens with the SAME signer, and an identityless
+    /// legacy snapshot necessarily mints and seals a signer on its first reopen,
+    /// which a second reopen then preserves. Both paths keep the generation key
+    /// absent in subsequent durable JSON rather than materializing generation 2.
+    func testLegacyRestoreFamiliesPreserveSignerAndKeepGenerationAbsent() throws {
+        // Sealed legacy: same signer, generation stays absent.
+        let sealedDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sealedURL = sealedDir.appendingPathComponent("profile.json")
+        let sealedStorage = try ProtectedProfileStorage(fileURL: sealedURL)
+        let sealedKeys = TestWrappingKeyStore()
+        let sealedOriginal = try RiotProfileRepository.open(storage: sealedStorage, keyStore: sealedKeys)
+        let sealedSigner = try sealedOriginal.me().id
+        try removeStarterCatalogGeneration(from: sealedURL)
+
+        let sealedReopened = try RiotProfileRepository.open(storage: sealedStorage, keyStore: sealedKeys)
+        _ = try sealedReopened.createPublicSpace(title: "Sealed legacy")
+        XCTAssertEqual(try sealedReopened.me().id, sealedSigner)
+        XCTAssertFalse(try snapshotContainsGenerationKey(in: sealedURL))
+
+        // Identityless legacy: first reopen mints+seals; second reopen preserves.
+        let idlessDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let idlessURL = idlessDir.appendingPathComponent("profile.json")
+        let idlessStorage = try ProtectedProfileStorage(fileURL: idlessURL)
+        let idlessKeys = TestWrappingKeyStore()
+        _ = try RiotProfileRepository.open(storage: idlessStorage, keyStore: idlessKeys)
+        try removeStarterCatalogGeneration(from: idlessURL)
+        try removeSealedIdentity(from: idlessURL)
+
+        let idlessFirst = try RiotProfileRepository.open(storage: idlessStorage, keyStore: idlessKeys)
+        let mintedSigner = try idlessFirst.me().id
+        // First reopen sealed a fresh identity durably, and it must not have
+        // taken the fresh generation-2 marker.
+        XCTAssertEqual(try sealedIdentityBytes(in: idlessURL).count, 112)
+        XCTAssertFalse(try snapshotContainsGenerationKey(in: idlessURL))
+
+        let idlessSecond = try RiotProfileRepository.open(storage: idlessStorage, keyStore: idlessKeys)
+        _ = try idlessSecond.createPublicSpace(title: "Identityless legacy")
+        XCTAssertEqual(try idlessSecond.me().id, mintedSigner)
+        XCTAssertFalse(try snapshotContainsGenerationKey(in: idlessURL))
+    }
 }
 
 private extension BindingSemanticsTests {
@@ -295,5 +392,35 @@ private func removeSealedIdentity(from snapshotURL: URL) throws {
         JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
     )
     object.removeValue(forKey: "sealedIdentity")
+    try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
+}
+
+private func starterCatalogGeneration(in snapshotURL: URL) throws -> Int? {
+    let object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    return object["starterCatalogGeneration"] as? Int
+}
+
+private func snapshotContainsGenerationKey(in snapshotURL: URL) throws -> Bool {
+    let object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    return object.keys.contains("starterCatalogGeneration")
+}
+
+private func removeStarterCatalogGeneration(from snapshotURL: URL) throws {
+    var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    object.removeValue(forKey: "starterCatalogGeneration")
+    try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
+}
+
+private func setStarterCatalogGeneration(_ value: Int, in snapshotURL: URL) throws {
+    var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    object["starterCatalogGeneration"] = value
     try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
 }

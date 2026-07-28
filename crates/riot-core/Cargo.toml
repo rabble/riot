@@ -35,6 +35,11 @@ rand_core = { workspace = true }
 hifitime = { workspace = true }
 zeroize = { workspace = true }
 chacha20poly1305 = { workspace = true }
+data-encoding = { workspace = true }
+# Structured spans for the sync state machine. Macros compile to no-ops with
+# no subscriber installed, so this stays wasm-safe for the --no-default-features
+# build; the os_log Layer lives only in riot-ffi (native).
+tracing = { workspace = true }
 # Native targets compile the bundled SQLite via the default `sqlite` feature.
 # Optional so a `--no-default-features` wasm build can drop the C library.
 rusqlite = { workspace = true, optional = true }
@@ -47,6 +52,8 @@ getrandom = { version = "0.2", features = ["js"] }
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
 serde_json = { workspace = true }
+data-encoding = { workspace = true }
+tracing-test = { workspace = true }
 
 # Integration tests exercise the injectable factories, so they need the
 # conformance surface. This does not affect the release riot-ffi graph.
@@ -136,6 +143,14 @@ required-features = ["conformance"]
 
 [[test]]
 name = "demo_fixture_drift"
+required-features = ["conformance"]
+
+[[test]]
+name = "governance_conformance"
+required-features = ["conformance"]
+
+[[test]]
+name = "governance_durable"
 required-features = ["conformance"]
 
 # The demo packer signs with seeded keys so its output is byte-reproducible,

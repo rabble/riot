@@ -8,7 +8,7 @@
 
 **Architecture:** Shared Rust core owns catalog split, admission/quota preflight, and the locked prepare/persist/finalize transactions; `riot-ffi` exposes them; native shells (iOS/macOS/Android) own host chrome + theme/font injection + preference storage; web (`fixtures/apps/`) owns the eight v2 tool sources + `_shared` token/toolbar/helper system; CI gains a blocking `miniapps` job.
 
-**Tech Stack:** Rust 2021 (riot-core, riot-ffi/UniFFI), Swift 6/SwiftUI, Kotlin 2.2/Compose, vanilla HTML/CSS/JS microapps, Node + Playwright contract/browser tests.
+**Tech Stack:** Rust 2021 (riot-core, riot-ffi/UniFFI), Swift 6/SwiftUI, Kotlin 2.2 with the existing imperative Android View shell, vanilla HTML/CSS/JS microapps, Node + Playwright contract/browser tests.
 
 ---
 
@@ -31,7 +31,7 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
 | WU-001 | 1 | Catalog split + legacy resolver + capacity preflight (Rust core+FFI) | riot-core, riot-ffi | — |
 | WU-001N | 1 | Persist generation marker + Android 4 MiB codec-ceiling preflight | Android `PersistedProfile.kt`, iOS/macOS `ProfileRepository.swift`, FFI restore sig | WU-001 |
 | WU-002 | 1 | Locked prepare/persist/finalize: trust grant/revoke + app-data | riot-core, riot-ffi, native shells | WU-001N |
-| WU-002P | 1 | Existing-user presentation: `Legacy 1`/`Redesigned · Version 2` cards, install-warning copy, distinct count-full vs storage-full copy (spec §"Existing-user presentation") | iOS/macOS/Android Tools UI | WU-001N, WU-002 |
+| WU-002P | 1 | Community-scoped Tools presentation first: **A** shared iOS/macOS `In <community>` → `Available to add` → secondary `More tools`, named namespace-bound Open/Add/Ask/Make available/Recommend actions, retained trust gate, marketing-site/native poster aesthetic, macOS-width + large-Dynamic-Type review; **B** Android parity; **C** only then `Legacy 1`/`Redesigned · Version 2`, install-warning, and distinct count-full/storage-full copy (spec §"Existing-user presentation" and `2026-07-24-community-scoped-tools-design.md`) | iOS/macOS/Android Tools UI | WU-001N, WU-002 (WU-002c must key trust by `(namespaceID, fullAppID)`, fail closed when migrating global IDs, and preserve active-namespace listing truth across A→B→A switches) |
 | WU-003 | 2 | Semantic tokens + 6 theme presets + Night Garden fallback + drift contract | `fixtures/apps/_shared`, contract test | — |
 | WU-004 | 2 | `appearanceProfileID` lifecycle + theme picker + native preference store | riot-core/ffi, iOS/macOS/Android | WU-003 |
 | WU-005 | 2 | `RiotToolFonts.v1` pack + reserved-path resolver + per-ID CSP + nosniff + normalization vectors | riot-ffi, native, preview | WU-003 |
@@ -57,6 +57,12 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
 4. **WU-007 (Events) is a hard gate.** Any failed Events navigation/keyboard/perf/coexistence criterion revises the shared system (WU-003..006, `_shared`) before any WU-008+ starts. One app per reviewed WU after.
 5. **WU-014 (Checklist v2)** is last in Slice 4; Checklist **v1** source/manifest/bundle/app-ID stay byte-frozen — never an edit target.
 6. **WU-016** CI wiring should land incrementally as fixtures appear, but the blocking job is gated on WU-015.
+7. **WU-002P ordering is mandatory:** community scope and immediate Open/Add
+   goals land before generation/provenance/quota cosmetics. Generation metadata
+   cannot move an enabled tool below a disabled tool. WU-002P remains
+   merge/release-blocked until WU-001N and all of WU-002, including
+   namespace-scoped Apple trust persistence, fail-closed legacy-global-ID
+   migration, and active-namespace directory truth in WU-002c, are complete.
 
 ## Per-WU deliverables (uniform Definition of Done)
 

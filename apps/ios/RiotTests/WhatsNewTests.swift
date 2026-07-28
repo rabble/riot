@@ -165,6 +165,7 @@ private func unreadAuthor() -> NewswireAuthor {
 private func unreadPost(_ id: String, _ tai: UInt64) -> NewswireProjectedPost {
     NewswireProjectedPost(
         entryId: id, author: unreadAuthor(), taiJ2000Micros: tai,
+        createdAtUnixSeconds: nil,
         headline: "h-\(id)", body: "b", language: "en",
         coarseLocation: nil, eventTimeUnixSeconds: nil, expiresAtUnixSeconds: nil,
         sourceClaims: [], operationalProfile: nil, aiAssisted: false,

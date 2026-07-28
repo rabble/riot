@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  UniFFI's generated binding checks for java.lang.ref.Cleaner by reflection and
+  falls back to the pinned JNA cleaner where that class is unavailable, so the
+  NewApi hits in riot_ffi.kt are false positives.
+
+  This replaces lint-baseline.xml. A baseline records the offending file as a
+  variant-scoped path variable (${:app*debug*MAIN*sourceProvider*0*javaDir*3}),
+  which exists in the debug lint run and NOT in the release one — so
+  lintVitalReportRelease died with "Path variable ... not provided to
+  serialization" and `assembleRelease` could never complete. A path-scoped
+  ignore carries across variants.
+
+  Scoped to the generated binding by regexp so real NewApi problems in our own
+  Kotlin still fail the build.
+-->
+<lint>
+    <issue id="NewApi">
+        <ignore regexp="riot_ffi/riot_ffi\.kt" />
+    </issue>
+</lint>

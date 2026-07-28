@@ -57,8 +57,9 @@ pub use contributors::{contributors, ContributorRowV1};
 pub(crate) use entry::inspect_verified_components;
 pub use entry::{
     create_signed_editorial_action, create_signed_news_comment, create_signed_news_post,
-    create_signed_news_reaction, create_signed_space_descriptor, inspect_news_record,
-    is_editorial_authority, NewswirePayload, SignedNewswireRecord, VerifiedNewswireRecord,
+    create_signed_news_reaction, create_signed_news_reaction_at, create_signed_space_descriptor,
+    inspect_news_record, is_editorial_authority, NewswirePayload, SignedNewswireRecord,
+    VerifiedNewswireRecord,
 };
 pub use model::{
     decode_editorial_action, decode_news_comment, decode_news_post, decode_news_reaction,
@@ -71,18 +72,18 @@ pub use model::{
 };
 pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
 pub use projection::{
-    project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedComment,
-    ProjectedEditorialAction, ProjectedPost, ProjectedReactionTally, ProjectionClockV1,
-    MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
+    project, project_for_viewer, NewswireProjection, NewswireProjectionError, PostTreatment,
+    ProjectedComment, ProjectedEditorialAction, ProjectedPost, ProjectedReactionTally,
+    ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
 };
 pub use share::{
-    build_share_reference, decode_share_reference, encode_share_reference,
-    verify_descriptor_matches, NewswireShareReferenceV1, ShareReferenceError,
-    SHARE_REFERENCE_PREFIX,
+    build_share_reference, decode_share_reference, decode_share_reference_with_handle,
+    encode_share_reference, encode_share_reference_with_handle, verify_descriptor_matches,
+    NewswireShareReferenceV1, ShareReferenceError, SHARE_REFERENCE_PREFIX,
 };
 pub use store::{
-    contributors_for_space, load_space_descriptor, load_space_records, project_space,
-    NewswireStoreError,
+    contributors_for_space, discover_space_descriptors, load_space_descriptor, load_space_records,
+    project_space, project_space_for_viewer, NewswireStoreError,
 };
 
 #[cfg(feature = "conformance")]

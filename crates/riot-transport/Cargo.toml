@@ -18,10 +18,13 @@ ed25519-dalek = { workspace = true }
 getrandom = "0.2"
 # Optional Tor (Arti) outbound transport. Behind the `arti` feature so the
 # default workspace build pulls no Arti/Tor crates (heavy; would disturb the
-# lock tree and slow every CI run). The `tokio` feature on arti-client makes
-# DataStream implement tokio's AsyncRead/AsyncWrite — the shape pump consumes.
+# lock tree and slow every CI run). Features on arti-client:
+#   tokio                 — DataStream implements tokio AsyncRead/AsyncWrite
+#   onion-service-client  — REQUIRED to dial .onion addresses (without it, Arti
+#                           bootstraps but refuses onion connects with "feature
+#                           onion-service-client not compiled in").
 # Pinned per-crate (like iroh), deliberately NOT a workspace dependency.
-arti-client = { version = "0.44.0", optional = true, features = ["tokio"] }
+arti-client = { version = "0.44.0", optional = true, features = ["tokio", "onion-service-client"] }
 tor-rtcompat = { version = "0.44.0", optional = true }
 
 [features]
@@ -32,4 +35,4 @@ default = []
 arti = ["dep:arti-client", "dep:tor-rtcompat"]
 
 [dev-dependencies]
-tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
+tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "process"] }

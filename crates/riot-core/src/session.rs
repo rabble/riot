@@ -224,6 +224,12 @@ pub struct DuplicateResult {
     pub(crate) all_entry_ids_live: bool,
 }
 
+impl DuplicateResult {
+    pub fn all_entry_ids_live(&self) -> bool {
+        self.all_entry_ids_live
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitOutcome {
     Committed(ImportReceipt),
@@ -764,6 +770,17 @@ impl EvidenceStore {
                         item.frame.payload_bytes(),
                     )
                     .is_ok();
+                // Coordinate ledger records bind exactly like newswire records:
+                // the reserved `coordinate/v1` prefix carries a communal record
+                // whose payload must be RETAINED so the ledger store scan can
+                // rediscover it. Without this branch the item falls through to
+                // the alert decode below, is judged ineligible, and never lands.
+                let valid_coordinate = crate::coordinate::is_coordinate_prefix(path)
+                    && crate::coordinate::inspect_verified_components(
+                        authorised.entry(),
+                        item.frame.payload_bytes(),
+                    )
+                    .is_ok();
                 let path_matches = if is_owned_editorial || is_owned_moderation || is_app_data {
                     // Both bind by path alone: the payload is opaque and embeds
                     // no identity a path could contradict.
@@ -797,6 +814,8 @@ impl EvidenceStore {
                         == subspace_id
                 } else if crate::newswire::is_newswire_prefix(path) {
                     valid_newswire
+                } else if crate::coordinate::is_coordinate_prefix(path) {
+                    valid_coordinate
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -818,6 +837,7 @@ impl EvidenceStore {
                         || app_index_slot.is_some()
                         || profile_subspace.is_some()
                         || valid_newswire
+                        || valid_coordinate
                         || is_owned_editorial
                         || is_owned_moderation;
                     verified.push(VerifiedEntry {
@@ -1133,6 +1153,38 @@ impl ImportPlan {
 
     pub fn commit(&self) -> Result<CommitOutcome, SessionError> {
         self.commit_inner(false)
+    }
+
+    /// Computes the exact join effects this live plan would produce without
+    /// consuming the plan or mutating store state.
+    pub fn preflight_effects(&self) -> Result<Vec<(EntryId, JoinEffect)>, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_open_store()?;
+        if !plan_parent_is_live(&st, self.preview_id) {
+            return Err(SessionError::PreviewConsumed);
+        }
+        match &st.plan {
+            Some(p) if p.plan_id == self.plan_id && p.preview_id == self.preview_id => {}
+            _ => return Err(plan_terminal_error(&st, self.plan_id)),
+        }
+        if st.store.as_ref().unwrap().generation != self.base_generation {
+            return Err(SessionError::StalePreview);
+        }
+
+        let entries = st.plan.as_ref().unwrap().entries.clone();
+        let pre_join = st.store.as_ref().unwrap().join.clone();
+        let batch = entries
+            .iter()
+            .map(|verified| {
+                (
+                    verified.authorised.clone(),
+                    verified.payload.as_ref().map(|payload| payload.to_vec()),
+                )
+            })
+            .collect();
+        Ok(plan_join_with_payloads(&pre_join, batch)
+            .map_err(|_| SessionError::StoreFull)?
+            .effects)
     }
 
     /// Test-only: build the next snapshot, then fail before the pointer swap.
@@ -1465,7 +1517,7 @@ mod charge_budget_tests {
 
 #[cfg(test)]
 mod local_write_tests {
-    use super::{commit_at, ImportContext, InspectOutcome, RiotSession};
+    use super::{commit_at, CommitOutcome, ImportContext, InspectOutcome, JoinEffect, RiotSession};
     use crate::apps::index::app_index_trust_path;
     use crate::apps::trust::{
         encode_trust_marker, trust_markers_for, TrustMarker, TrustMarkerKind,
@@ -1482,6 +1534,30 @@ mod local_write_tests {
             timestamp_micros: 0,
         })
         .expect("payload")
+    }
+
+    fn signed_at(
+        author: &crate::willow::EvidenceAuthor,
+        path: &crate::willow::Path,
+        payload: &[u8],
+        timestamp: u64,
+    ) -> crate::willow::SignedWillowEntry {
+        let entry = crate::willow::Entry::builder()
+            .namespace_id(author.namespace_id().clone())
+            .subspace_id(author.subspace_id())
+            .path(path.clone())
+            .timestamp(timestamp)
+            .payload(payload)
+            .build();
+        let authorised = crate::willow::authorise_entry(author, entry).expect("authorise");
+        let token = authorised.authorisation_token();
+        let signature: ed25519_dalek::Signature = token.signature().clone().into();
+        crate::willow::SignedWillowEntry {
+            entry_bytes: crate::willow::encode_entry(authorised.entry()),
+            capability_bytes: crate::willow::encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload.to_vec(),
+        }
     }
 
     #[test]
@@ -1506,6 +1582,48 @@ mod local_write_tests {
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].kind, TrustMarkerKind::Revoke);
         assert_eq!(markers[0].timestamp_micros, 200);
+    }
+
+    #[test]
+    fn preflight_effects_is_read_only_and_leaves_plan_live_for_commit() {
+        let session = RiotSession::open().expect("session");
+        let store = session.create_store().expect("store");
+        let organizer = generate_communal_author().expect("organizer");
+        let app_id = [23u8; 32];
+        let path = app_index_trust_path(&app_id, organizer.subspace_id().as_bytes()).expect("path");
+        let payload = trust_payload(app_id, TrustMarkerKind::Trust);
+        let signed = signed_at(&organizer, &path, &payload, 100);
+        let bundle = encode_bundle(&[signed]).expect("bundle");
+        let preview = match store.inspect_local_write(&bundle, ImportContext::new("preflight-test"))
+        {
+            Ok(outcome) => outcome.expect_preview(),
+            Err(_) => panic!("inspect failed"),
+        };
+        let plan = preview.plan_all().expect("plan");
+        let before = (
+            store.generation().expect("generation"),
+            store.receipt_count().expect("receipts"),
+            store.live_entry_ids().expect("live ids"),
+        );
+
+        let effects = plan.preflight_effects().expect("preflight");
+
+        assert!(matches!(
+            effects.as_slice(),
+            [(_, JoinEffect::Winner { .. })]
+        ));
+        assert_eq!(
+            (
+                store.generation().expect("generation"),
+                store.receipt_count().expect("receipts"),
+                store.live_entry_ids().expect("live ids"),
+            ),
+            before
+        );
+        assert!(matches!(
+            plan.commit().expect("commit after preflight"),
+            CommitOutcome::Committed(_)
+        ));
     }
 
     #[test]

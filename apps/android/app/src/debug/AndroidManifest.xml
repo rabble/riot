@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only: the design-system showcase, so the component set can be seen on
+     a real device without being reachable in a release build. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="net.protest.riot.design.RiotShowcaseActivity"
+            android:exported="true"
+            android:label="Riot design system" />
+    </application>
+</manifest>

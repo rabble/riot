@@ -2,6 +2,7 @@
 //! and preview-first atomic import. Phase 0A evidence scope only.
 
 pub mod apps;
+pub mod coordinate;
 /// The seeded demo space, built from committed source content. Conformance-only:
 /// it derives signing keys from fixed seeds (the raw-secret constructor that
 /// feature exists to keep out of the release graph), and nothing in the release
@@ -9,7 +10,13 @@ pub mod apps;
 /// ordinary import pipeline.
 #[cfg(feature = "conformance")]
 pub mod demo_fixture;
+pub mod governance;
+/// Earthstar-style self-certifying identity handles (`@author.<suffix>`,
+/// `+space.<suffix>` / `-space.<suffix>`). App-layer display/sharing
+/// convention only; protocol identity lives in [`willow::identity`].
+pub mod identity;
 pub mod import;
+pub mod meadowcap;
 pub mod model;
 pub mod newswire;
 pub mod profile;

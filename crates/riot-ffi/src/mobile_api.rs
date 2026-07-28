@@ -13,6 +13,25 @@ pub struct PublicSpace {
     pub is_public: bool,
 }
 
+/// The verified result of parsing an `@author.<suffix>` handle. The
+/// `subspace_key_hex` is the 32-byte identity recovered from the suffix alone
+/// (self-certifying); `shortname` is the decorative human label.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParsedAuthorHandle {
+    pub subspace_key_hex: String,
+    pub shortname: String,
+}
+
+/// The verified result of parsing a `+space.<suffix>` / `-space.<suffix>` handle.
+/// `namespace_id_hex` is the 32-byte identity; `kind` is `"communal"` or `"owned"`
+/// (derived from the id's final byte); `shortname` is the decorative label.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParsedSpaceHandle {
+    pub namespace_id_hex: String,
+    pub kind: String,
+    pub shortname: String,
+}
+
 /// The person's relationship to a community, in plain product terms. Derived
 /// from the held author, never caller-asserted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -52,6 +71,38 @@ pub struct CommunityRow {
     /// archived, not quarantined). False → the chooser offers recovery, never
     /// silently drops the row.
     pub available: bool,
+}
+
+/// A community DISCOVERED in the store after an anchor-relay pull — a place the
+/// device now holds the entries for but has not yet adopted into its registry.
+///
+/// The pull imports a community's verified O/C/W entries into the durable store,
+/// but importing bytes is not the same as *being in* a community: the chooser
+/// reads the registry, and the wire projects from a descriptor whose id the pull
+/// never announced. This is the bridge — it names what actually landed so the app
+/// can turn "3 entries imported" into "you can walk into River City News and read
+/// the wire". A candidate with a `descriptor_entry_id` is a full newswire
+/// community (its wire + people project); one without is a namespace that carried
+/// standalone alerts (its board shows them, but there is no descriptor to project
+/// a wire from yet).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncedCommunityCandidate {
+    /// The namespace to adopt (the descriptor's namespace, or the alert-bearing
+    /// namespace), lowercase hex.
+    pub namespace_id: String,
+    /// The `SpaceDescriptorV1` EntryId (hex) when this is a full newswire
+    /// community; `None` for an alert-only namespace with no descriptor yet.
+    pub descriptor_entry_id: Option<String>,
+    /// The community's own name from its signed descriptor, when known.
+    pub name: Option<String>,
+    /// Projected newswire posts (open wire + front page + earlier) — the "how
+    /// much is happening here" a person sees before walking in. 0 without a
+    /// descriptor.
+    pub post_count: u32,
+    /// Standalone alert entries in the namespace (the legacy board's content).
+    pub alert_count: u32,
+    /// Distinct people who have contributed here — the "who is here" count.
+    pub contributor_count: u32,
 }
 
 /// One row in the followed-sites list: a composite indymedia site the user
@@ -273,14 +324,52 @@ pub fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_local_profile()
 }
 
+/// Installs the process-wide tracing subscriber that forwards Riot's sync and
+/// newswire spans to the unified logging system (`os_log`, subsystem
+/// `net.protest.riot`) on Apple platforms, or to stderr elsewhere. Call once at
+/// app launch, before opening a profile. Safe to call repeatedly; every call
+/// after the first is a no-op that returns `Ok(())`. The first call's `level`
+/// wins for the process.
+///
+/// Without this, the `tracing` spans emitted across the sync + reply paths
+/// compile to no-ops and nothing is observable in Console.app or `log stream`.
+#[uniffi::export]
+pub fn init_logging(level: crate::LogLevel) {
+    crate::logging::init_app_logging(level)
+}
+
 /// Restores only the local signing identity. Content/store persistence is a
 /// separate native concern. Both inputs remain opaque byte arrays in UniFFI.
+///
+/// `starter_catalog_generation` is the persisted marker the native host read
+/// back from its snapshot: `None` for a legacy (pre-marker) profile, which is
+/// generation 1, or `Some(1)`/`Some(2)` for an explicitly recorded generation.
+/// The value is retained exactly; it is never re-derived as a fresh open.
 #[uniffi::export]
 pub fn open_profile_from_sealed_identity(
     wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
-    crate::mobile_state::open_profile_from_sealed_identity(wrapping_key, sealed_identity)
+    crate::mobile_state::open_profile_from_sealed_identity(
+        wrapping_key,
+        sealed_identity,
+        starter_catalog_generation,
+    )
+}
+
+/// Restores an identityless local (in-memory) profile — one that was persisted
+/// without a sealed identity — retaining its starter-catalog generation. An
+/// identityless persisted profile is NOT fresh: it mints a bootstrap author but
+/// keeps its grandfathered marker (`None` stays generation 1) instead of taking
+/// the fresh `Some(2)` marker `open_local_profile` assigns.
+#[uniffi::export]
+pub fn open_local_profile_for_starter_catalog_generation(
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_local_profile_for_starter_catalog_generation(
+        starter_catalog_generation,
+    )
 }
 
 /// Opens a local profile backed by a durable SQLite database at `db_path`.
@@ -294,25 +383,82 @@ pub fn open_local_profile_with_database(
     crate::mobile_state::open_local_profile_with_database(db_path)
 }
 
+/// Restores an identityless local profile backed by a durable SQLite database at
+/// `db_path`, retaining its starter-catalog generation. The durable-storage
+/// counterpart of `open_local_profile_for_starter_catalog_generation`; an
+/// identityless persisted profile keeps its grandfathered marker rather than
+/// materializing generation 2.
+#[uniffi::export]
+pub fn open_local_profile_with_database_for_starter_catalog_generation(
+    db_path: String,
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_local_profile_with_database_for_starter_catalog_generation(
+        db_path,
+        starter_catalog_generation,
+    )
+}
+
 /// Restores a profile from a sealed identity into a durable SQLite database
 /// at `db_path`. Combines identity restore with persistent storage.
+///
+/// `starter_catalog_generation` is retained exactly, as in
+/// `open_profile_from_sealed_identity`.
 #[uniffi::export]
 pub fn open_profile_from_sealed_identity_with_database(
     db_path: String,
     wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_profile_from_sealed_identity_with_database(
         db_path,
         wrapping_key,
         sealed_identity,
+        starter_catalog_generation,
     )
+}
+
+/// Parses an `@author.<suffix>` handle, recovering the self-certifying 32-byte
+/// subspace key and the decorative shortname from the string alone. Rejects
+/// malformed handles as `InvalidInput`.
+#[uniffi::export]
+pub fn parse_author_handle(handle: String) -> Result<ParsedAuthorHandle, MobileError> {
+    crate::mobile_state::parse_author_handle(handle)
+}
+
+/// Parses a `+space.<suffix>` / `-space.<suffix>` handle, recovering the
+/// namespace id, kind, and shortname. A sigil that doesn't match the id's
+/// final-byte parity is rejected. `InvalidInput` on any malformed handle.
+#[uniffi::export]
+pub fn parse_space_handle(handle: String) -> Result<ParsedSpaceHandle, MobileError> {
+    crate::mobile_state::parse_space_handle(handle)
 }
 
 #[uniffi::export]
 impl MobileProfile {
     pub fn identity(&self) -> Result<PublicIdentity, MobileError> {
         crate::mobile_state::identity(&self.inner)
+    }
+
+    /// Mints the user's self-certifying author handle for the active community:
+    /// `@<shortname>.<52-char base32 key>`. The shortname is read from the
+    /// community registry; `InvalidInput` if none is set (use
+    /// `set_handle_shortname` first). Use for "share my identity", QR codes.
+    pub fn my_author_handle(&self) -> Result<String, MobileError> {
+        crate::mobile_state::my_author_handle(&self.inner)
+    }
+
+    /// Mints the active community's space handle (`+<shortname>.<suffix>`).
+    /// `InvalidInput` if no shortname is set.
+    pub fn my_space_handle(&self) -> Result<String, MobileError> {
+        crate::mobile_state::my_space_handle(&self.inner)
+    }
+
+    /// Sets the handle shortname for the active community (3..=32 chars of
+    /// `[a-z0-9-]`), persisting it. `InvalidInput` on a bad shortname.
+    pub fn set_handle_shortname(&self, shortname: String) -> Result<(), MobileError> {
+        crate::mobile_state::set_handle_shortname(&self.inner, shortname)
     }
 
     /// Returns authenticated opaque state suitable for Keychain/Keystore
@@ -391,6 +537,19 @@ impl MobileProfile {
     /// metadata only — it never unseals any community's author.
     pub fn list_communities(&self) -> Result<Vec<CommunityRow>, MobileError> {
         crate::mobile_state::list_communities(&self.inner)
+    }
+
+    /// The communities this device has PULLED but not yet adopted — discovered by
+    /// scanning the store for descriptors and for alert-bearing namespaces among
+    /// the ones a pull just imported. Read-only: it names what landed so the app
+    /// can offer "Open <community>"; the adoption itself (registry join +
+    /// reprojection) goes through the ordinary join/switch paths. `pulled_namespace_ids`
+    /// bounds the alert search to what the pull actually touched.
+    pub fn discover_synced_communities(
+        &self,
+        pulled_namespace_ids: Vec<String>,
+    ) -> Result<Vec<SyncedCommunityCandidate>, MobileError> {
+        crate::mobile_state::discover_synced_communities(&self.inner, pulled_namespace_ids)
     }
 
     /// Every composite indymedia site the user follows, as author-less rows —

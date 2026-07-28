@@ -34,12 +34,48 @@ pass condition. Do not judge Keychain health from archive-style installs
 
 ## Test-suite scope
 
-`RiotKitTests-macOS` compiles the portable iOS suites by reference:
-`BindingSemanticsTests`, `RiotTabBarTests`, `TransportContractTests`
-(37 tests). Left out: `RiotThemeTests` (uses `UIColor` — iOS-only),
+`RiotKitTests-macOS` compiles the portable iOS suites by reference, including
+`AppBreadcrumbTests` for bounded page-title parsing, WebKit title/root
+synchronization, and safe mounted-tool transitions on both Apple platforms.
+Left out: `RiotThemeTests` (uses `UIColor` — iOS-only),
 `ShellNavigationTests` (exercises the app shell, not the library),
-`AppRuntimeHostTests` (iOS JS-apps runtime, not yet ported — the macOS JS
-runtime is a gated later phase, plan Task 5).
+and the broader `AppRuntimeHostTests` suite (its iOS-specific fixtures remain
+separate; the cross-platform breadcrumb/runtime subset lives in the shared
+suite above).
+
+## Compact reaction UI evidence
+
+The DEBUG-only reaction fixture creates two isolated local profiles, joins the
+reader to the author’s community through the real bounded sync protocol, and
+clicks the reader’s compact controls through SwiftUI, UniFFI, and Rust. It never
+uses production storage, nearby transport, a relay, or fixed record IDs.
+
+```sh
+# End-to-end macOS clicks, typed failures, keyboard/pointer behavior, and invalid activation
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme Riot-macOS -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests
+
+# Retained 900- and 1200-point macOS screenshots
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme Riot-macOS -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests/testReactionAt900 \
+  -resultBundlePath build/reaction-900.xcresult
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme Riot-macOS -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests/testReactionAt1200 \
+  -resultBundlePath build/reaction-1200.xcresult
+
+# Native SwiftUI/UIKit renders at exactly 320 points, normal and accessibility type
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 16 Pro Max,OS=26.2' \
+  -only-testing:RiotTests/CompactReactionBarNativeSnapshotTests \
+  -resultBundlePath build/reaction-ios-320.xcresult
+```
+
+Export retained screenshots with
+`xcrun xcresulttool export attachments --path <bundle>.xcresult
+--output-path <directory>`.
 
 ## Verified / deferred
 

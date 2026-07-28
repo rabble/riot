@@ -19,7 +19,7 @@
       "evidenceByPlatform": {
         "ios": { "codePaths": ["apps/ios/Riot/AppModel.swift"], "journeyIds": ["ios:create-switch-community"] },
         "macos": { "codePaths": ["apps/ios/Riot/AppModel.swift"], "journeyIds": ["macos:create-switch-community"] },
-        "android": { "codePaths": ["apps/android/app/src/main/kotlin/org/riot/evidence/RiotController.kt"], "journeyIds": ["android:create-switch-community"] }
+        "android": { "codePaths": ["apps/android/app/src/main/kotlin/net/protest/riot/RiotController.kt"], "journeyIds": ["android:create-switch-community"] }
       },
       "state": "human-action"
     },

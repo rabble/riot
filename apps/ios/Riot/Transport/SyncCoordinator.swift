@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public enum NearbySyncOutcome: Equatable, Sendable {
     case sendMore(terminal: Bool = false)
@@ -57,11 +58,22 @@ public enum NearbyConnectionState: Equatable, Sendable {
 }
 
 public final class SyncCoordinator {
+    /// The subsystem every Riot log shares, matching the one FFI `Logger`
+    /// instances use, so Console.app filters by a single predicate.
+    private static let subsystem = "net.protest.riot"
+    private static let logger = Logger(subsystem: subsystem, category: "sync")
+
     public var onStateChanged: ((NearbyConnectionState) -> Void)?
     /// An extra hook for anyone who wants to know an import landed. The redraw
     /// of open apps does NOT depend on it — `addPreviewedContent` announces that
     /// itself — so leaving this nil loses nothing.
     public var onImportAccepted: (() -> Void)?
+    /// Fired with a one-card summary whenever a sync attempt reaches a terminal
+    /// outcome (success or failure). The host forwards it to
+    /// `RiotAppModel.recordSyncDiagnostic(_:)` for the Diagnostics panel. The
+    /// detailed failure cause is in the unified log via Rust `tracing`; this is
+    /// the coarse summary.
+    public var onDiagnostic: ((SyncDiagnosticSummary) -> Void)?
     public private(set) var state: NearbyConnectionState = .idle {
         didSet { onStateChanged?(state) }
     }
@@ -71,6 +83,10 @@ public final class SyncCoordinator {
     private let friendlyName: String
     private var sessionClosed = false
     private var acceptedImport = false
+    /// Counters for the Diagnostics summary. Frames are counted at the boundary
+    /// methods that exchange them so the panel reflects what actually crossed.
+    private var framesSent = 0
+    private var framesReceived = 0
 
     /// - Parameter framesFromConnection: when false, frames arrive through
     ///   `deliver(_:)` instead. `SpacePairing` needs that: it has owned the
@@ -90,7 +106,7 @@ public final class SyncCoordinator {
         if framesFromConnection {
             connection.onReceive = { [weak self] frame in self?.receive(frame) }
         }
-        connection.onFailure = { [weak self] in self?.fail() }
+        connection.onFailure = { [weak self] in self?.fail(nil) }
     }
 
     /// Feeds one frame in, for a caller that owns the wire (see the initializer).
@@ -110,7 +126,7 @@ public final class SyncCoordinator {
             state = .gettingLatest(name: friendlyName)
             try process(try session.begin(), terminalState: .alreadyCurrent)
         } catch {
-            fail()
+            fail(error)
         }
     }
 
@@ -151,14 +167,14 @@ public final class SyncCoordinator {
             AppRuntimeView.postDataChanged()
             onImportAccepted?()
             if !sessionClosed { state = .gettingLatest(name: friendlyName) }
-        } catch { fail() }
+        } catch { fail(error) }
     }
 
     public func rejectPreviewedContent() {
         guard !sessionClosed else { return }
         do {
             try process(try session.rejectImport(), terminalState: .idle)
-        } catch { fail() }
+        } catch { fail(error) }
     }
 
     public func stop() {
@@ -168,33 +184,89 @@ public final class SyncCoordinator {
 
     private func receive(_ frame: Data) {
         guard !sessionClosed else { return }
+        framesReceived += 1
         do {
             try process(try session.receive(frame), terminalState: acceptedImport ? .caughtUp : .alreadyCurrent)
         } catch {
-            fail()
+            fail(error)
         }
     }
 
     private func sendNextOutbound() throws {
         guard let frame = try session.nextOutbound() else { throw NearbyTransportError.notConnected }
         try connection.send(frame)
+        framesSent += 1
     }
 
     private func process(_ outcome: NearbySyncOutcome, terminalState: NearbyConnectionState) throws {
         switch outcome {
         case let .sendMore(terminal):
             try sendNextOutbound()
-            if terminal { state = terminalState; closeSession() }
+            if terminal {
+                state = terminalState
+                closeSession()
+                recordSuccess(outcome: outcomeLabel(for: terminalState))
+            }
         case let .readyToPreview(count): state = .preview(count: count, name: friendlyName)
-        case .done: state = terminalState; closeSession()
-        case .failed: fail()
+        case .done:
+            state = terminalState
+            closeSession()
+            recordSuccess(outcome: outcomeLabel(for: terminalState))
+        case .failed: fail(nil)
         }
     }
 
-    private func fail() {
+    private func fail(_ error: Error?) {
+        // Surface the error to the unified log before it is reduced to the bare
+        // `.failed` state. The Rust side has already logged the precise cause;
+        // this Swift-side record ties the coarse code to the attempt.
+        let errorCode = coarseErrorCode(for: error)
+        Self.logger.error("nearby sync failed: \(errorCode ?? "unknown", privacy: .public)")
         state = .failed
         closeSession()
         connection.disconnect()
+        onDiagnostic?(SyncDiagnosticSummary(
+            transport: "Nearby",
+            outcome: "Failed",
+            errorCode: errorCode,
+            framesSent: framesSent,
+            framesReceived: framesReceived
+        ))
+    }
+
+    /// Records a successful terminal outcome so the Diagnostics panel shows the
+    /// last GOOD sync too, not only failures.
+    private func recordSuccess(outcome: String) {
+        onDiagnostic?(SyncDiagnosticSummary(
+            transport: "Nearby",
+            outcome: outcome,
+            errorCode: nil,
+            framesSent: framesSent,
+            framesReceived: framesReceived
+        ))
+    }
+
+    /// Maps a `NearbyConnectionState` to the one-word outcome label shown on
+    /// the diagnostics card.
+    private func outcomeLabel(for state: NearbyConnectionState) -> String {
+        switch state {
+        case .caughtUp: "Caught up"
+        case .alreadyCurrent: "Already current"
+        case .idle: "Idle"
+        default: "Done"
+        }
+    }
+
+    /// Extracts the coarse `MobileError` code from a thrown error, when the
+    /// error is the FFI type. Returns `nil` for non-FFI errors (e.g.
+    /// `NearbyTransportError`) so the card shows "unknown" rather than a
+    /// misleading code.
+    private func coarseErrorCode(for error: Error?) -> String? {
+        guard let error else { return nil }
+        // The FFI throws `MobileError` (a Swift Error via UniFFI); its
+        // description is the UPPERCASE code string. Non-FFI errors fall through.
+        let mobileError = error as? MobileError
+        return mobileError.map { String(describing: $0) }
     }
 
     private func closeSession() {

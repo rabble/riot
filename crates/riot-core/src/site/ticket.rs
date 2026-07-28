@@ -14,7 +14,8 @@
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-const TICKET_DOMAIN: &[u8] = b"riot/site-ticket/v1";
+const TICKET_DOMAIN_V1: &[u8] = b"riot/site-ticket/v1";
+const TICKET_ONION_DOMAIN_V1: &[u8] = b"riot/site-ticket/onion/v1";
 
 /// The transport floor a site demands. Open enum: an unrecognized token is
 /// [`Floor::Unknown`] and fails closed — never silently parsed as `None`.
@@ -106,19 +107,30 @@ pub struct Ticket {
     /// Tor-capable client prefers it when present, but the fail-closed transport
     /// decision still keys off `require`, not off the presence of `onion`.
     pub onion: Option<String>,
+    /// A decorative Earthstar-style handle shortname for the site (the `my-site`
+    /// in a `-my-site.<suffix>` owned-space handle). UNSIGNED — like `node`, NOT
+    /// covered by the signature — so it can be added, changed, or stripped
+    /// without affecting the signed floor. The namespace id in the path is the
+    /// actual identity (self-certifying); this label is purely human-readable.
+    /// Absent on a ticket minted without one.
+    pub name: Option<String>,
     pub sig: [u8; 64],
 }
 
 /// The canonical bytes the root signs: domain-separated, length-framed, and
 /// including the RAW `require` string so any floor token round-trips.
 ///
-/// UNAMBIGUOUS by construction: every variable-length field is length-framed and
-/// the field order is fixed, so no two distinct field-sets can produce the same
-/// bytes. Optional fields (currently `url`) append at the END, in a FIXED order,
-/// each length-framed, and ONLY when present — so a ticket minted before `url`
-/// existed (`None`) has a canonical byte-identical to today (backward-compat),
-/// while a present `url` is covered by the signature (and cannot be stripped or
-/// forged without the root key).
+/// Tickets without an onion retain the original v1 encoding byte-for-byte,
+/// including its optional trailing `url`, so already-issued tickets keep
+/// verifying. Tickets with an onion use a separate signature domain and explicit
+/// presence framing for every optional field. The separate domain is
+/// load-bearing: it prevents an attacker from relabeling a signed `onion=X` as
+/// the legacy `url=X` while preserving the signature.
+struct SignedLocations<'a> {
+    url: Option<&'a str>,
+    onion: Option<&'a str>,
+}
+
 fn canonical(
     root: &[u8; 32],
     namespace: &[u8; 32],
@@ -126,12 +138,16 @@ fn canonical(
     epoch: u64,
     exp: u64,
     digest: &[u8; 32],
-    url: Option<&str>,
-    onion: Option<&str>,
+    locations: SignedLocations<'_>,
 ) -> Vec<u8> {
-    let mut m =
-        Vec::with_capacity(TICKET_DOMAIN.len() + 32 + 32 + 4 + require_raw.len() + 8 + 8 + 32);
-    m.extend_from_slice(TICKET_DOMAIN);
+    let SignedLocations { url, onion } = locations;
+    let domain = if onion.is_some() {
+        TICKET_ONION_DOMAIN_V1
+    } else {
+        TICKET_DOMAIN_V1
+    };
+    let mut m = Vec::with_capacity(domain.len() + 32 + 32 + 4 + require_raw.len() + 8 + 8 + 32);
+    m.extend_from_slice(domain);
     m.extend_from_slice(root);
     m.extend_from_slice(namespace);
     m.extend_from_slice(&(require_raw.len() as u32).to_be_bytes());
@@ -139,16 +155,24 @@ fn canonical(
     m.extend_from_slice(&epoch.to_be_bytes());
     m.extend_from_slice(&exp.to_be_bytes());
     m.extend_from_slice(digest);
-    // Fixed-order optional-field tail (append future signed optionals HERE, in a
-    // stable order, each length-framed). `None` appends nothing. Order is url,
-    // then onion — a later field cannot land before an earlier one.
-    if let Some(url) = url {
-        m.extend_from_slice(&(url.len() as u32).to_be_bytes());
-        m.extend_from_slice(url.as_bytes());
-    }
     if let Some(onion) = onion {
+        // Onion-domain optional tail: explicit presence framing in fixed field
+        // order makes url and onion structurally distinct.
+        match url {
+            Some(url) => {
+                m.push(1);
+                m.extend_from_slice(&(url.len() as u32).to_be_bytes());
+                m.extend_from_slice(url.as_bytes());
+            }
+            None => m.push(0),
+        }
+        m.push(1);
         m.extend_from_slice(&(onion.len() as u32).to_be_bytes());
         m.extend_from_slice(onion.as_bytes());
+    } else if let Some(url) = url {
+        // Legacy v1 tail, preserved exactly for tickets without onion.
+        m.extend_from_slice(&(url.len() as u32).to_be_bytes());
+        m.extend_from_slice(url.as_bytes());
     }
     m
 }
@@ -172,8 +196,10 @@ impl Ticket {
             self.epoch,
             self.exp,
             &self.digest,
-            self.url.as_deref(),
-            self.onion.as_deref(),
+            SignedLocations {
+                url: self.url.as_deref(),
+                onion: self.onion.as_deref(),
+            },
         );
         key.verify(&msg, &sig).is_ok()
     }
@@ -200,6 +226,10 @@ impl Ticket {
         if let Some(onion) = &self.onion {
             s.push_str("&onion=");
             s.push_str(onion);
+        }
+        if let Some(name) = &self.name {
+            s.push_str("&name=");
+            s.push_str(name);
         }
         s.push_str("&sig=");
         s.push_str(&hex(&self.sig));
@@ -230,8 +260,10 @@ pub fn mint(
         epoch,
         exp,
         &digest,
-        url.as_deref(),
-        onion.as_deref(),
+        SignedLocations {
+            url: url.as_deref(),
+            onion: onion.as_deref(),
+        },
     );
     let sig = root_signing_key.sign(&msg).to_bytes();
     Ticket {
@@ -244,6 +276,9 @@ pub fn mint(
         node,
         url,
         onion,
+        // `name` is an unsigned decorative label; mint always produces None and
+        // the caller sets it after minting if a handle label is wanted.
+        name: None,
         sig,
     }
 }
@@ -265,6 +300,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
     let mut node = None;
     let mut url = None;
     let mut onion = None;
+    let mut name = None;
     let mut sig = None;
     for pair in query.split('&') {
         let (k, v) = pair
@@ -279,6 +315,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
             "node" => node = Some(v.to_string()),
             "url" => url = Some(v.to_string()),
             "onion" => onion = Some(v.to_string()),
+            "name" => name = Some(v.to_string()),
             "sig" => sig = Some(hex64(v).ok_or(TicketParseError::BadField("sig"))?),
             _ => {} // ignore unknown params (forward-compat), never affects the floor
         }
@@ -293,6 +330,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
         node,
         url,
         onion,
+        name,
         sig: sig.ok_or(TicketParseError::BadField("sig"))?,
     })
 }

@@ -36,12 +36,12 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use riot_core::site::{RequireTransport, SiteRole, ValidatedManifest};
 
-use crate::codec::{CanonicalRecord, CodecError};
+use crate::codec::{decode_canonical, CanonicalRecord, CodecError};
 use crate::digest::digest_v1;
 use crate::records::{
-    decode_delegate_grant, decode_listing_payload, AdmittedListingEnvelopeV1, CommunityListingV1,
-    ListingDelegateGrantV1, PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2, TransportFloor,
-    MAX_TICKET_CORE_BYTES,
+    decode_delegate_grant, decode_listing_payload, AdmittedListingEnvelopeV1, AnchorSignedBody,
+    CommunityListingV1, ListingDelegateGrantV1, OperatorSignedEnvelopeV1, PublicSiteTicketV2Core,
+    RootSignedTicketCoreEnvelopeV2, TransportFloor, MAX_TICKET_CORE_BYTES,
 };
 
 /// The required `min_sync_version` for a v2 ticket. Anything else is a downgrade.
@@ -100,6 +100,9 @@ pub enum AuthorityError {
     RootMismatch,
     /// A carried canonical record failed to decode.
     MalformedRecord(CodecError),
+    /// A pulled directory checkpoint was not signed by the pinned operator key
+    /// (a lying or impersonating relay). Client-pull only.
+    UntrustedCheckpoint,
 }
 
 impl core::fmt::Display for AuthorityError {
@@ -613,4 +616,144 @@ pub fn verify_listing_delegate_grant(
         .map_err(AuthorityError::MalformedRecord)?;
     verify_ed25519(&grant.root_id, &preimage, signature)
         .map_err(|_| AuthorityError::InvalidDelegateGrant)
+}
+
+// ---------------------------------------------------------------------------
+// verify_pulled_listing — the pure client-side, anchor-untrusting row verifier
+// ---------------------------------------------------------------------------
+
+/// A pulled directory row whose trust has been fully re-established client-side.
+///
+/// Every field here is safe to show in `Discover` because it survived
+/// [`verify_pulled_listing`]: the coordinates + ticket agree with the community's
+/// own O-root signature, and the checkpoint carrying the row was signed by the
+/// pinned relay operator key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedListingRow {
+    /// Full `O` root key (`== o_namespace_id`).
+    pub root_id: [u8; 32],
+    /// `O` namespace id.
+    pub o_namespace_id: [u8; 32],
+    /// `C` namespace id.
+    pub c_namespace_id: [u8; 32],
+    /// `W` namespace id.
+    pub w_namespace_id: [u8; 32],
+    /// Bound manifest digest.
+    pub manifest_digest: [u8; 32],
+    /// Bound manifest version.
+    pub manifest_version: u64,
+    /// Listing epoch.
+    pub listing_epoch: u32,
+    /// Listing revision.
+    pub listing_revision: u32,
+    /// Display title.
+    pub title: String,
+    /// Display summary.
+    pub summary: String,
+    /// Optional steward display name.
+    pub steward_name: Option<String>,
+    /// Topic tags (sorted canonical set).
+    pub topic_tags: Vec<Vec<u8>>,
+    /// Languages (sorted canonical set).
+    pub languages: Vec<String>,
+    /// Optional coarse region.
+    pub region: Option<Vec<u8>>,
+    /// The verified, embedded [`RootSignedTicketCoreEnvelopeV2`] bytes — the join
+    /// ticket routed into the relay pull + `commitJoin`.
+    pub ticket_core_bytes: Vec<u8>,
+    /// Listing expiry (Unix seconds; inclusive).
+    pub expiry_unix_seconds: u64,
+    /// `root_signed_ticket_core_digest` of the admitted ticket.
+    pub root_signed_ticket_core_digest: [u8; 32],
+}
+
+/// Re-verify one pulled directory listing **without trusting the anchor**.
+///
+/// This is the pure seam a later FFI `pull_directory` (WU-3) calls per row. It
+/// composes the crate's existing canonical gates — it hand-rolls none of them:
+///
+/// 1. **Pinned operator key on the checkpoint.** The operator-signed `checkpoint`
+///    is verified against `pinned_operator_key` (the relay identity pinned in the
+///    app) via [`OperatorSignedEnvelopeV1::verify`]. A relay that did not sign with
+///    the pinned key — an impersonator or a MITM — is rejected
+///    ([`AuthorityError::UntrustedCheckpoint`]). The verifier is generic over the
+///    checkpoint body so WU-2's `DirectoryCheckpointBodyV1` drops in unchanged.
+/// 2. **Community O-root signature + transport floor + expiry.** The row's embedded
+///    `ticket_core_bytes` is decoded and run through the SAME
+///    [`admit_public_site_ticket`] gate `SubmitListingService::verify_submission`
+///    uses on the anchor side (`manifest = None`: the client browses before it has
+///    pulled the site's manifest). A forged or expired ticket is rejected.
+/// 3. **Coordinate binding.** The admitted ticket's `root/O/C/W/manifest`
+///    coordinates must equal the display row's — the exact self-check
+///    `verify_submission` performs — so a lying relay that rewrites a row's
+///    coordinates is caught ([`AuthorityError::ManifestMismatch`]).
+///
+/// NOTE (flagged for review): the display TEXT fields (`title`/`summary`/
+/// `steward_name`) are covered by the listing entry's Willow signature at
+/// admission, not re-checked here — this dependency-neutral crate does not parse a
+/// `willow25` entry (see the module-level note on `resolve_listing`). The
+/// anchor-untrusting guarantee this function provides is the community O-root
+/// ticket signature + coordinate binding + the pinned operator checkpoint. A later
+/// unit that carries the full signed listing item can additionally re-run
+/// `verify_entry` to bind the text fields; it is out of scope for this pure seam.
+pub fn verify_pulled_listing<B: AnchorSignedBody>(
+    checkpoint: &OperatorSignedEnvelopeV1<B>,
+    pinned_operator_key: &[u8; 32],
+    listing: &CommunityListingV1,
+    now: u64,
+) -> Result<VerifiedListingRow, AuthorityError> {
+    // 1. Pinned operator key on the checkpoint (relay identity).
+    checkpoint
+        .verify(pinned_operator_key)
+        .map_err(|_| AuthorityError::UntrustedCheckpoint)?;
+
+    // 2. The community's own O-root ticket: same canonical gate the anchor runs.
+    let ticket_envelope = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
+        &listing.ticket_core_bytes,
+        MAX_TICKET_CORE_BYTES + 128,
+    )
+    .map_err(AuthorityError::MalformedRecord)?;
+    let admitted = admit_public_site_ticket(
+        &ticket_envelope,
+        None,
+        &TransportFloor::RequireNone,
+        &TicketFloor {
+            root_id: listing.root_id,
+            highest_transport_epoch: None,
+        },
+        now,
+    )?;
+
+    // 3. Coordinate binding: the display row must not disagree with the SIGNED
+    //    ticket (identical to verify_submission's internal-consistency self-check).
+    let core = &admitted.core;
+    if core.root_id != listing.root_id
+        || core.o_namespace_id != listing.o_namespace_id
+        || core.c_namespace_id != listing.c_namespace_id
+        || core.w_namespace_id != listing.w_namespace_id
+        || core.manifest_digest != listing.manifest_digest
+        || core.manifest_version != listing.manifest_version
+    {
+        return Err(AuthorityError::ManifestMismatch);
+    }
+
+    Ok(VerifiedListingRow {
+        root_id: listing.root_id,
+        o_namespace_id: listing.o_namespace_id,
+        c_namespace_id: listing.c_namespace_id,
+        w_namespace_id: listing.w_namespace_id,
+        manifest_digest: listing.manifest_digest,
+        manifest_version: listing.manifest_version,
+        listing_epoch: listing.listing_epoch,
+        listing_revision: listing.listing_revision,
+        title: listing.title.clone(),
+        summary: listing.summary.clone(),
+        steward_name: listing.steward_name.clone(),
+        topic_tags: listing.topic_tags.clone(),
+        languages: listing.languages.clone(),
+        region: listing.region.clone(),
+        ticket_core_bytes: listing.ticket_core_bytes.clone(),
+        expiry_unix_seconds: listing.expiry_unix_seconds,
+        root_signed_ticket_core_digest: admitted.root_signed_ticket_core_digest,
+    })
 }

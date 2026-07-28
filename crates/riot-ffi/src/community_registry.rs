@@ -42,9 +42,11 @@ const REGISTRY_VERSION: u8 = 1;
 /// written by an older build has `RECORD_FIELDS_LEGACY` fields and still loads
 /// (the appended optional fields default to `None`) — so an upgrade never bricks
 /// on a pre-existing registry. Append new optional fields at the END and bump.
-const RECORD_FIELDS: u64 = 11;
+const RECORD_FIELDS: u64 = 12;
+/// The field count before `handle_shortname` was appended (the prior current).
+const RECORD_FIELDS_LEGACY: u64 = 11;
 /// The field count before `fetch_url` + `require_floor` were appended.
-const RECORD_FIELDS_LEGACY: u64 = 9;
+const RECORD_FIELDS_LEGACY_9: u64 = 9;
 
 /// The person's relationship to a community, in plain product terms. Derived
 /// from the sealed author, never caller-asserted: `Organizer` iff the author's
@@ -117,6 +119,15 @@ pub(crate) struct CommunityRecord {
     /// clearnet HTTPS (that leaks the follower's IP to the mirror — the exact harm
     /// require:arti prevents), so only a `none` floor exposes a fetchable url.
     pub require_floor: Option<String>,
+    /// The user's chosen Earthstar-style handle shortname for this community
+    /// (e.g. the `ana` in `@ana.<suffix>`). `None` until the user picks one.
+    /// Constrained to 3..=32 chars of `[a-z0-9-]` (validated by
+    /// `riot_core::identity::validate_shortname`). Separate from the free-form
+    /// Unicode display name: the shortname is a paste-token that travels in
+    /// share URIs and handles; the display name is what `render_display_name`
+    /// shows. Per-community, like the sealed author, so a handle does not link
+    /// a pseudonym across communities.
+    pub handle_shortname: Option<String>,
 }
 
 /// The whole registry: every held community plus which one is active.
@@ -169,6 +180,9 @@ impl CommunityRegistry {
             }
             if incoming.require_floor.is_some() {
                 existing.require_floor = incoming.require_floor;
+            }
+            if incoming.handle_shortname.is_some() {
+                existing.handle_shortname = incoming.handle_shortname;
             }
         } else {
             self.communities.push(incoming);
@@ -242,18 +256,20 @@ fn encode_record(e: &mut Encoder<&mut Vec<u8>>, record: &CommunityRecord) {
     encode_opt_u64(e, record.last_sync_unix_seconds);
     encode_opt_str(e, record.fetch_url.as_deref());
     encode_opt_str(e, record.require_floor.as_deref());
+    encode_opt_str(e, record.handle_shortname.as_deref());
 }
 
 fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
-    // TOLERANT arity, but FAIL-CLOSED: accept ONLY the legacy or the current
-    // field count — anything else is malformed and rejected (never silently
-    // accepted). A registry written before the appended tail existed has
-    // RECORD_FIELDS_LEGACY fields and still loads (the new fields -> None), so an
-    // upgrade never bricks a pre-existing registry.
+    // TOLERANT arity, but FAIL-CLOSED: accept ONLY a known field count — the
+    // current one or any prior legacy count — anything else is malformed and
+    // rejected (never silently accepted). A registry written before an appended
+    // tail existed has fewer fields and still loads (the new fields -> None), so
+    // an upgrade never bricks a pre-existing registry.
     let fields = d.array().map_err(|_| RegistryCorrupt)?;
-    let has_new_fields = match fields {
-        Some(n) if n == RECORD_FIELDS => true,
-        Some(n) if n == RECORD_FIELDS_LEGACY => false,
+    let tail = match fields {
+        Some(n) if n == RECORD_FIELDS => RecordTail::Current,
+        Some(n) if n == RECORD_FIELDS_LEGACY => RecordTail::PreShortname,
+        Some(n) if n == RECORD_FIELDS_LEGACY_9 => RecordTail::PreFetchUrl,
         _ => return Err(RegistryCorrupt),
     };
     let namespace_id = decode_array32(d)?;
@@ -266,12 +282,13 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
     let quarantined = d.bool().map_err(|_| RegistryCorrupt)?;
     let last_activity_unix_seconds = decode_opt_u64(d)?;
     let last_sync_unix_seconds = decode_opt_u64(d)?;
-    // `has_new_fields` covers the whole appended tail (fetch_url + require_floor),
-    // added together in one release — a legacy record has neither.
-    let (fetch_url, require_floor) = if has_new_fields {
-        (decode_opt_str(d)?, decode_opt_str(d)?)
-    } else {
-        (None, None)
+    // The appended tail grew in two releases: fetch_url + require_floor first,
+    // then handle_shortname. A record older than a given tail has none of its
+    // fields (they default to None).
+    let (fetch_url, require_floor, handle_shortname) = match tail {
+        RecordTail::Current => (decode_opt_str(d)?, decode_opt_str(d)?, decode_opt_str(d)?),
+        RecordTail::PreShortname => (decode_opt_str(d)?, decode_opt_str(d)?, None),
+        RecordTail::PreFetchUrl => (None, None, None),
     };
     Ok(CommunityRecord {
         namespace_id,
@@ -285,7 +302,20 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
         last_sync_unix_seconds,
         fetch_url,
         require_floor,
+        handle_shortname,
     })
+}
+
+/// Which appended-tail epoch a record was written with. Used by
+/// [`decode_record`] to decide how many trailing optional fields to read.
+#[derive(Clone, Copy)]
+enum RecordTail {
+    /// The current layout: through `handle_shortname`.
+    Current,
+    /// Before `handle_shortname` was appended: through `require_floor`.
+    PreShortname,
+    /// Before `fetch_url` + `require_floor`: the original 9-field record.
+    PreFetchUrl,
 }
 
 fn encode_opt_bytes(e: &mut Encoder<&mut Vec<u8>>, value: Option<&[u8]>) {
@@ -377,6 +407,7 @@ mod tests {
             last_sync_unix_seconds: None,
             fetch_url: None,
             require_floor: None,
+            handle_shortname: None,
         }
     }
 
@@ -387,7 +418,7 @@ mod tests {
     fn a_legacy_record_without_fetch_url_decodes_with_none() {
         let mut buf = Vec::new();
         let mut e = Encoder::new(&mut buf);
-        e.array(RECORD_FIELDS_LEGACY).unwrap();
+        e.array(RECORD_FIELDS_LEGACY_9).unwrap();
         e.bytes(&[9u8; 32]).unwrap();
         e.str("Legacy site").unwrap();
         e.u8(Relationship::Following.to_wire()).unwrap();
@@ -407,6 +438,39 @@ mod tests {
             record.fetch_url.is_none() && record.require_floor.is_none(),
             "a legacy record loads with the new fields None — no brick on upgrade"
         );
+        assert!(
+            record.handle_shortname.is_none(),
+            "a legacy-9 record loads with handle_shortname None too"
+        );
+    }
+
+    /// BACKWARD-COMPAT: a registry written before `handle_shortname` was appended
+    /// has the 11-field layout and MUST still decode (shortname -> None).
+    #[test]
+    fn a_pre_shortname_record_decodes_with_shortname_none() {
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        e.array(RECORD_FIELDS_LEGACY).unwrap(); // 11 fields, pre-shortname
+        e.bytes(&[7u8; 32]).unwrap();
+        e.str("Pre-shortname space").unwrap();
+        e.u8(Relationship::Organizer.to_wire()).unwrap();
+        e.null().unwrap(); // sealed_author
+        e.null().unwrap(); // descriptor_entry_id
+        e.bool(false).unwrap(); // archived
+        e.bool(false).unwrap(); // quarantined
+        e.null().unwrap(); // last_activity_unix_seconds
+        e.null().unwrap(); // last_sync_unix_seconds
+        e.str("https://mirror.example/s.bundle").unwrap(); // fetch_url
+        e.str("none").unwrap(); // require_floor
+                                // no handle_shortname field — the pre-shortname layout
+
+        let mut d = Decoder::new(&buf);
+        let record = decode_record(&mut d).expect("pre-shortname record must still decode");
+        assert_eq!(
+            record.handle_shortname, None,
+            "an 11-field record loads with handle_shortname None — no brick on upgrade"
+        );
+        assert_eq!(record.require_floor.as_deref(), Some("none"));
     }
 
     #[test]
@@ -419,6 +483,19 @@ mod tests {
         encode_record(&mut e, &r);
         let mut d = Decoder::new(&buf);
         assert_eq!(decode_record(&mut d).unwrap(), r);
+    }
+
+    #[test]
+    fn a_record_with_a_handle_shortname_round_trips() {
+        let mut r = record(5);
+        r.handle_shortname = Some("lower-east-side".into());
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        encode_record(&mut e, &r);
+        let mut d = Decoder::new(&buf);
+        let decoded = decode_record(&mut d).expect("round trip");
+        assert_eq!(decoded.handle_shortname.as_deref(), Some("lower-east-side"));
+        assert_eq!(decoded, r);
     }
 
     /// FAIL-CLOSED arity: a record whose field count is NEITHER the legacy nor the
@@ -450,12 +527,14 @@ mod tests {
             assert_eq!(Relationship::from_wire(r.to_wire()), Some(r));
         }
         assert_eq!(Relationship::from_wire(5), None);
-        // The record shape grew (fetch_url + require_floor appended) but the wire
-        // is still decoded TOLERANTLY (legacy 9-field records load), so no
-        // REGISTRY_VERSION bump was needed — that is the property this guards.
+        // The record shape grew (fetch_url + require_floor, then handle_shortname)
+        // but the wire is still decoded TOLERANTLY (legacy 9- and 11-field records
+        // load), so no REGISTRY_VERSION bump was needed — that is the property this
+        // guards.
         assert_eq!(REGISTRY_VERSION, 1);
-        assert_eq!(RECORD_FIELDS_LEGACY, 9);
-        assert_eq!(RECORD_FIELDS, 11);
+        assert_eq!(RECORD_FIELDS_LEGACY_9, 9);
+        assert_eq!(RECORD_FIELDS_LEGACY, 11);
+        assert_eq!(RECORD_FIELDS, 12);
     }
 
     #[test]

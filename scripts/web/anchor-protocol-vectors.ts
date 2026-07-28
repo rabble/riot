@@ -385,7 +385,7 @@ function encListingDelegateGrant(f: Fields): Uint8Array {
 function encCommunityListing(f: Fields): Uint8Array {
   if (f.schema !== COMMUNITY_LISTING_SCHEMA) throw new Error(`unexpected schema ${f.schema}`);
   const w = new Writer()
-    .arr(18)
+    .arr(19)
     .tstr(COMMUNITY_LISTING_SCHEMA)
     .bstr(bx(f.root_id))
     .bstr(bx(f.o_namespace_id))
@@ -404,6 +404,8 @@ function encCommunityListing(f: Fields): Uint8Array {
   if (f.region === null) w.nul();
   else w.bstr(bx(f.region));
   w.uint(f.issued_unix_seconds).uint(f.expiry_unix_seconds);
+  if (f.steward_name === null || f.steward_name === undefined) w.nul();
+  else w.tstr(f.steward_name);
   return w.out();
 }
 
@@ -922,7 +924,7 @@ export function assertCanonical(bytes: Uint8Array): void {
 /** Decode a CommunityListingV1 enforcing sorted, duplicate-free topic/language sets. */
 export function decodeCommunityListingCanonical(bytes: Uint8Array): void {
   const r = new Reader(bytes);
-  if (r.arrayHead() !== 18) throw new Error("expected 18-element listing");
+  if (r.arrayHead() !== 19) throw new Error("expected 19-element listing");
   if (r.readText() !== COMMUNITY_LISTING_SCHEMA) throw new Error("bad schema");
   for (let i = 0; i < 5; i++) r.readBytes(); // root_id, o/c/w ns, manifest_digest
   r.uintHead(); // manifest_version
@@ -934,7 +936,7 @@ export function decodeCommunityListingCanonical(bytes: Uint8Array): void {
   r.readText(); // summary
   readSortedSet(r, "byte", "topic_tags");
   readSortedSet(r, "text", "languages");
-  // region / issued / expiry: only the sets carry order rules we assert here.
+  // region / issued / expiry / steward_name: only the sets carry order rules we assert here.
 }
 
 function readSortedSet(r: Reader, kind: "byte" | "text", name: string): void {

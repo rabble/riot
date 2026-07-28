@@ -1,5 +1,6 @@
 use crate::import::{decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, ItemStatus};
 use crate::willow::{decode_entry_canonic, entry_id, EntryId, SignedWillowEntry};
+use tracing::{debug, instrument, warn};
 use willow25::groupings::Namespaced;
 
 use super::{missing_entry_ids, SyncError, SyncFrame, MAX_SYNC_IDS};
@@ -73,28 +74,38 @@ impl ReconcileSession {
         })
     }
 
+    #[instrument(target = "riot::sync", skip(self), fields(ns = ?self.namespace_id))]
     pub fn begin(&mut self) -> Result<SyncAction, SyncError> {
         if self.phase != Phase::Idle {
+            warn!(target: "riot::sync", phase = ?self.phase, error = "UnexpectedFrame", "sync.begin refused — not idle");
             return Err(SyncError::UnexpectedFrame);
         }
         self.phase = Phase::AwaitingInitialSummary;
+        debug!(target: "riot::sync", new_phase = "AwaitingInitialSummary", "sync.begin → sending Hello");
         Ok(SyncAction::Send(SyncFrame::Hello {
             namespace_id: self.namespace_id,
         }))
     }
 
+    #[instrument(target = "riot::sync", skip(self, frame), fields(ns = ?self.namespace_id))]
     pub fn receive(&mut self, frame: SyncFrame) -> Result<SyncAction, SyncError> {
         if frame_namespace(&frame) != self.namespace_id {
+            warn!(target: "riot::sync", error = "NamespaceMismatch", "sync.receive rejected frame from foreign namespace");
             return Err(SyncError::NamespaceMismatch);
         }
         match (&self.phase, frame) {
-            (Phase::Complete, _) => Err(SyncError::UnexpectedFrame),
+            (Phase::Complete, _) => {
+                warn!(target: "riot::sync", error = "UnexpectedFrame", "sync.receive received frame after Complete");
+                Err(SyncError::UnexpectedFrame)
+            }
             (_, SyncFrame::Reject { code, .. }) => {
+                debug!(target: "riot::sync", code, "sync.receive got Reject → completing");
                 self.pending_entries.clear();
                 self.phase = Phase::Complete;
                 Ok(SyncAction::Rejected(code))
             }
             (Phase::Idle, SyncFrame::Hello { .. }) => {
+                debug!(target: "riot::sync", new_phase = "AwaitingInitialRequestOrPeerSummary", "sync.receive got Hello → sending summary");
                 self.phase = Phase::AwaitingInitialRequestOrPeerSummary;
                 Ok(self.summary_action())
             }
@@ -113,6 +124,7 @@ impl ReconcileSession {
             }
             (Phase::AwaitingRequestOrComplete, SyncFrame::Complete { .. })
             | (Phase::AwaitingComplete, SyncFrame::Complete { .. }) => {
+                debug!(target: "riot::sync", new_phase = "Complete", "sync.receive got Complete");
                 self.phase = Phase::Complete;
                 Ok(SyncAction::Complete)
             }
@@ -126,24 +138,32 @@ impl ReconcileSession {
                 self.pending_entries =
                     verify_received_bundle(&bundle_bytes, self.namespace_id, expected)?;
                 self.phase = Phase::AwaitingImportDecision(*after_import);
+                debug!(target: "riot::sync", new_phase = "AwaitingImportDecision", pending = self.pending_entries.len(), "sync.receive verified Entries → awaiting import decision");
                 Ok(SyncAction::ImportBundle(bundle_bytes))
             }
-            _ => Err(SyncError::UnexpectedFrame),
+            _ => {
+                warn!(target: "riot::sync", phase = ?self.phase, error = "UnexpectedFrame", "sync.receive got a frame that does not advance this phase");
+                Err(SyncError::UnexpectedFrame)
+            }
         }
     }
 
+    #[instrument(target = "riot::sync", skip(self), fields(ns = ?self.namespace_id))]
     pub fn import_accepted(&mut self) -> Result<SyncAction, SyncError> {
         let Phase::AwaitingImportDecision(after_import) = self.phase else {
+            warn!(target: "riot::sync", phase = ?self.phase, error = "UnexpectedFrame", "sync.import_accepted refused — no pending import decision");
             return Err(SyncError::UnexpectedFrame);
         };
         self.retain_pending_entries();
         match after_import {
             AfterImport::SendSummary => {
                 self.phase = Phase::AwaitingRequestOrComplete;
+                debug!(target: "riot::sync", new_phase = "AwaitingRequestOrComplete", "sync.import_accepted → sending summary");
                 Ok(self.summary_action())
             }
             AfterImport::SendComplete => {
                 self.phase = Phase::Complete;
+                debug!(target: "riot::sync", new_phase = "Complete", "sync.import_accepted → sending Complete");
                 Ok(SyncAction::Send(SyncFrame::Complete {
                     namespace_id: self.namespace_id,
                 }))
@@ -151,10 +171,13 @@ impl ReconcileSession {
         }
     }
 
+    #[instrument(target = "riot::sync", skip(self), fields(ns = ?self.namespace_id))]
     pub fn import_rejected(&mut self, code: u8) -> Result<SyncAction, SyncError> {
         if !matches!(self.phase, Phase::AwaitingImportDecision(_)) {
+            warn!(target: "riot::sync", phase = ?self.phase, error = "UnexpectedFrame", "sync.import_rejected refused — no pending import decision");
             return Err(SyncError::UnexpectedFrame);
         }
+        debug!(target: "riot::sync", code, "sync.import_rejected → sending Reject and completing");
         self.pending_entries.clear();
         self.phase = Phase::Complete;
         Ok(SyncAction::Send(SyncFrame::Reject {
@@ -271,15 +294,18 @@ fn verify_received_bundle(
     // at exactly this namespace. Communal admission ignores the argument.
     let BundleDecodeOutcome::Decoded(decoded) = decode_bundle_with_root(bytes, Some(namespace_id))
     else {
+        warn!(target: "riot::sync", error = "InvalidBundle", expected = expected.len(), "verify_received_bundle failed to decode bundle");
         return Err(SyncError::InvalidBundle);
     };
     let mut received = Vec::with_capacity(decoded.items.len());
     let mut signed_entries = Vec::with_capacity(decoded.items.len());
     for item in decoded.items {
         let ItemStatus::Valid(valid) = item.status else {
+            warn!(target: "riot::sync", error = "InvalidBundle", "verify_received_bundle found an invalid item");
             return Err(SyncError::InvalidBundle);
         };
         if valid.entry.namespace_id().as_bytes() != &namespace_id {
+            warn!(target: "riot::sync", error = "NamespaceMismatch", "verify_received_bundle item from foreign namespace");
             return Err(SyncError::NamespaceMismatch);
         }
         received.push(valid.entry_id);
@@ -295,6 +321,7 @@ fn verify_received_bundle(
         });
     }
     if received != expected {
+        warn!(target: "riot::sync", error = "InvalidBundle", received = received.len(), expected = expected.len(), "verify_received_bundle entry ids do not match the requested set");
         return Err(SyncError::InvalidBundle);
     }
     Ok(signed_entries)

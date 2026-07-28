@@ -1,4 +1,4 @@
-<!-- source-sha256: debf2d498e1893389100a2b2362282380d655e0b470fb78c2e1392fc786d919a -->
+<!-- source-sha256: 45d29fb3c5ccd6672e67412b4b3c2deec828128561b8b81022007d9d5e8854dc -->
 # content rating
 
 ## Recommended ratings

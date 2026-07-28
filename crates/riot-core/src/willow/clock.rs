@@ -27,11 +27,22 @@ pub(crate) fn snapshot_from_unix_seconds_internal(
     uncertainty_seconds: u32,
 ) -> Result<ClockSnapshot, WillowError> {
     let unix_seconds = u64::try_from(unix_seconds).map_err(|_| WillowError::ClockUnavailable)?;
-    let epoch = hifitime::Epoch::from_unix_seconds(unix_seconds as f64);
+    snapshot_from_unix_duration_internal(
+        std::time::Duration::from_secs(unix_seconds),
+        uncertainty_seconds,
+    )
+}
+
+fn snapshot_from_unix_duration_internal(
+    duration: std::time::Duration,
+    uncertainty_seconds: u32,
+) -> Result<ClockSnapshot, WillowError> {
+    i64::try_from(duration.as_secs()).map_err(|_| WillowError::ClockUnavailable)?;
+    let epoch = hifitime::Epoch::from_unix_seconds(duration.as_secs_f64());
     let timestamp =
         willow25::entry::Timestamp::try_from(epoch).map_err(|_| WillowError::ClockUnavailable)?;
     Ok(ClockSnapshot {
-        unix_seconds,
+        unix_seconds: duration.as_secs(),
         tai_j2000_micros: u64::from(timestamp),
         uncertainty_seconds,
     })
@@ -46,10 +57,7 @@ fn snapshot_from_unix_duration(
     unix: Result<std::time::Duration, std::time::SystemTimeError>,
 ) -> Result<ClockSnapshot, WillowError> {
     unix.map_err(|_| WillowError::ClockUnavailable)
-        .and_then(|duration| {
-            i64::try_from(duration.as_secs()).map_err(|_| WillowError::ClockUnavailable)
-        })
-        .and_then(|seconds| snapshot_from_unix_seconds_internal(seconds, 60))
+        .and_then(|duration| snapshot_from_unix_duration_internal(duration, 60))
 }
 
 /// Convert a UTC Unix-seconds wall-clock reading into TAI/J2000 microseconds —
@@ -63,6 +71,36 @@ fn snapshot_from_unix_duration(
 pub fn tai_j2000_micros_from_unix_seconds(unix_seconds: u64) -> Result<u64, WillowError> {
     let seconds = i64::try_from(unix_seconds).map_err(|_| WillowError::ClockUnavailable)?;
     Ok(snapshot_from_unix_seconds_internal(seconds, 0)?.tai_j2000_micros)
+}
+
+/// The inverse of [`tai_j2000_micros_from_unix_seconds`]: recover the UTC
+/// Unix-seconds wall-clock reading from a Willow entry `Timestamp` (TAI/J2000
+/// microseconds). Used to give a renderer a real "created at" wall-clock instant
+/// from the only time an open-wire post carries — its entry timestamp — so no
+/// epoch math is hand-rolled at the display boundary (this repo has a documented
+/// time-unit trap: entry timestamps are TAI/J2000 µs, NOT Unix seconds). Takes
+/// the SAME pinned-hifitime path as the forward converter and the live snapshot,
+/// so the round trip is exact at second resolution. Pre-epoch instants (a
+/// timestamp earlier than 1970) and out-of-range readings map to
+/// `CLOCK_UNAVAILABLE` rather than silently wrapping.
+pub fn unix_seconds_from_tai_j2000_micros(tai_j2000_micros: u64) -> Result<u64, WillowError> {
+    // Invert the forward path EXACTLY. Forward is
+    //   micros = (Epoch::from_unix_seconds(s) - J2000_REF_EPOCH).total_nanos / 1000,
+    // whose subtraction is a UTC-clock duration. hifitime's own
+    // `From<Timestamp> for Epoch` reconstructs through a proper-time (TAI) add and
+    // so loses the leap seconds accrued since J2000 (a ~5s error at present) — do
+    // NOT use it. Rebuilding the epoch from the SAME UTC-duration base recovers
+    // the original Unix second exactly, across leap-second eras.
+    let micros = i128::from(tai_j2000_micros);
+    let duration_from_j2000 = hifitime::Duration::from_total_nanoseconds(micros * 1000);
+    let epoch = hifitime::Epoch::from_utc_duration(
+        hifitime::J2000_REF_EPOCH.to_utc_duration() + duration_from_j2000,
+    );
+    let unix_seconds = epoch.to_unix_seconds();
+    if !unix_seconds.is_finite() || unix_seconds < 0.0 {
+        return Err(WillowError::ClockUnavailable);
+    }
+    Ok(unix_seconds.round() as u64)
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +149,19 @@ mod tests {
         assert_eq!(
             snapshot_from_unix_duration(Ok(Duration::from_secs(u64::MAX))),
             Err(WillowError::ClockUnavailable)
+        );
+    }
+
+    #[test]
+    fn system_time_adapter_preserves_microseconds() {
+        let with_fraction =
+            snapshot_from_unix_duration(Ok(Duration::new(1_700_000_000, 123_456_000))).unwrap();
+        let whole = snapshot_from_unix_duration(Ok(Duration::from_secs(1_700_000_000))).unwrap();
+
+        assert_eq!(with_fraction.unix_seconds, whole.unix_seconds);
+        assert_eq!(
+            with_fraction.tai_j2000_micros - whole.tai_j2000_micros,
+            123_456
         );
     }
 }

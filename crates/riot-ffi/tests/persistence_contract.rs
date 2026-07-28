@@ -92,6 +92,7 @@ fn sealed_identity_survives_reopen_with_database() {
         db_path_string,
         TEST_WRAPPING_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("open profile (2)");
 
@@ -210,6 +211,16 @@ fn a_tool_id() -> String {
     "aa".repeat(32)
 }
 
+fn id_bytes(id: &str) -> Vec<u8> {
+    id.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).expect("entry id is UTF-8");
+            u8::from_str_radix(pair, 16).expect("entry id is hex")
+        })
+        .collect()
+}
+
 /// Create → sign → import an alert into the ACTIVE community's store, returning
 /// its complete entry id. This is a committed local write, not a draft.
 fn commit_alert(profile: &Arc<MobileProfile>) -> String {
@@ -321,6 +332,7 @@ fn a_join_seals_the_outgoing_author_inline_and_it_survives_reopen_without_persis
         db_path,
         TEST_WRAPPING_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("reopen");
 
@@ -395,6 +407,95 @@ fn communities_are_isolated_entries_approvals_and_coordinator_do_not_leak() {
         "A's approval is intact after operating in B"
     );
     assert!(board_has(&profile, &entry_id), "A's entry is intact");
+}
+
+#[test]
+fn directory_trust_is_scoped_to_the_active_community_across_switches() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("directory-trust-scope.db")
+        .to_string_lossy()
+        .to_string();
+    let (profile, a_ns, b_ns) = organizer_of_a_member_of_b(db_path);
+
+    profile
+        .switch_community(a_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch A");
+    let runtime = profile.app_runtime();
+    let verified_listing = runtime
+        .directory_listings()
+        .expect("directory in A")
+        .into_iter()
+        .next()
+        .expect("verified starter listing");
+    let app_id = verified_listing
+        .app_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    runtime
+        .trust_app(app_id.clone())
+        .expect("approve verified listing in A");
+    let listing_in_a = runtime
+        .directory_listings()
+        .expect("directory after approval in A")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains in A");
+    assert!(
+        listing_in_a
+            .trusted_in_spaces
+            .iter()
+            .any(|namespace| namespace == &id_bytes(&a_ns)),
+        "the verified listing is trusted in active Community A"
+    );
+    assert!(
+        runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "the execution gate agrees the app is trusted in A"
+    );
+
+    profile
+        .switch_community(b_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch B");
+    let listing_in_b = runtime
+        .directory_listings()
+        .expect("directory in B")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains discoverable in B");
+    assert!(
+        !listing_in_b
+            .trusted_in_spaces
+            .iter()
+            .any(|namespace| namespace == &id_bytes(&b_ns)),
+        "A's approval is not listed as trust in Community B"
+    );
+    assert!(
+        !runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "the execution gate agrees the app is not trusted in B"
+    );
+
+    profile
+        .switch_community(a_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch back to A");
+    let listing_back_in_a = runtime
+        .directory_listings()
+        .expect("directory after returning to A")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains in A after round trip");
+    let trusted_in_a = listing_back_in_a
+        .trusted_in_spaces
+        .iter()
+        .any(|namespace| namespace == &id_bytes(&a_ns));
+    assert_eq!(
+        trusted_in_a,
+        runtime.is_app_trusted(app_id).unwrap(),
+        "directory listing truth agrees with the execution gate after returning to A"
+    );
+    assert!(trusted_in_a, "the approval remains trusted in A");
 }
 
 #[test]
@@ -483,9 +584,13 @@ fn a_durable_reopen_restores_the_last_active_community_and_switches_between_seal
     };
 
     // Reopen: returning opens the last available community directly.
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     let active = reopened.active_community().unwrap().unwrap();
     assert_eq!(active.namespace_id, a_ns, "reopen lands on the last active");
     assert!(active.available);
@@ -525,9 +630,13 @@ fn a_sealed_community_is_un_loadable_without_the_key_and_recovers_from_quarantin
         (a_ns, b_ns, sealed)
     };
 
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     // A is active; B is sealed at rest and NOT loaded. Switching to B with the
     // WRONG key fails closed and quarantines B (preserved, not dropped).
     assert!(
@@ -638,6 +747,7 @@ fn a_corrupt_registry_blob_is_quarantined_for_recovery_not_discarded() {
         db_path.clone(),
         REGISTRY_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("reopen despite corrupt registry");
     assert!(
@@ -743,9 +853,13 @@ fn a_newswire_communitys_descriptor_handle_survives_a_reopen() {
         (signed.entry_id, sealed)
     };
 
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     let row = reopened.active_community().unwrap().unwrap();
     assert_eq!(
         row.descriptor_entry_id.as_deref(),
@@ -1046,5 +1160,87 @@ fn a_newswire_post_stays_in_its_community_and_is_never_offered_after_a_switch() 
             .iter()
             .any(|post| post.entry_id == a_post.entry_id),
         "A's post was NEVER offered across B's sync session"
+    );
+}
+
+/// The identityless generation-aware restore APIs, exercised through the PUBLIC
+/// `riot_ffi` surface rather than the internal state module.
+///
+/// These are the restore entry points a native host calls when it has a
+/// persisted profile with no sealed identity: the profile is NOT fresh, so it
+/// must keep whatever starter-catalog marker it was persisted with instead of
+/// taking the fresh generation the no-argument opens assign. Nothing consumes
+/// the marker behaviorally yet (that arrives with the native transaction
+/// wiring), so what is observable — and what this pins — is the validation
+/// contract and that a restored profile is actually usable.
+#[test]
+fn identityless_generation_restore_accepts_valid_markers_and_refuses_the_rest() {
+    // `None` is the durable encoding of a legacy generation-1 profile; 1 and 2
+    // are the explicitly recorded generations.
+    for generation in [None, Some(1u8), Some(2u8)] {
+        let profile = riot_ffi::open_local_profile_for_starter_catalog_generation(generation)
+            .expect("valid generation restores");
+        profile
+            .create_public_space("Restored".into())
+            .expect("a restored identityless profile is usable");
+    }
+
+    // Anything outside 1..=2 is refused rather than clamped or silently
+    // accepted — a bogus persisted marker must not open a profile at all.
+    for bad in [Some(0u8), Some(3u8), Some(u8::MAX)] {
+        assert!(
+            matches!(
+                riot_ffi::open_local_profile_for_starter_catalog_generation(bad),
+                Err(MobileError::InvalidInput)
+            ),
+            "generation {bad:?} must be refused"
+        );
+    }
+}
+
+/// The durable counterpart: same retention and validation contract, backed by a
+/// SQLite database, and the restored profile survives a reopen at the same path.
+#[test]
+fn durable_identityless_generation_restore_validates_and_persists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for (index, generation) in [None, Some(1u8), Some(2u8)].into_iter().enumerate() {
+        let db_path = dir
+            .path()
+            .join(format!("generation-{index}.db"))
+            .to_string_lossy()
+            .to_string();
+
+        let profile = riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+            db_path.clone(),
+            generation,
+        )
+        .expect("valid generation restores");
+        profile
+            .create_public_space("Durable".into())
+            .expect("a restored identityless profile is usable");
+        drop(profile);
+
+        // Reopening the same database through the same restore API keeps
+        // working — the marker does not corrupt the durable store.
+        let reopened = riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+            db_path, generation,
+        )
+        .expect("reopen with the same marker");
+        reopened
+            .create_public_space("Durable again".into())
+            .expect("store usable after reopen");
+    }
+
+    let bad_path = dir.path().join("refused.db").to_string_lossy().to_string();
+    assert!(
+        matches!(
+            riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+                bad_path,
+                Some(3u8),
+            ),
+            Err(MobileError::InvalidInput)
+        ),
+        "an out-of-range generation is refused before the database is opened"
     );
 }

@@ -1,84 +1,169 @@
+/* Riot microapp family — canonical semantic tokens + 6 personal themes.
+   Source of truth (spec §"Canonical shared source"); each app WU copies this
+   into its own dir before repacking. Default (no data-riot-theme) = Night
+   Garden, so first paint never flashes another person's theme. Fonts are
+   declared as stacks with system fallbacks; the self-hosted TTF pack + @font-face
+   at /.riot/fonts/* land in WU-005. */
+
 :root {
   color-scheme: light dark;
-  --paper: #f4efe5;
-  --surface: #fffaf0;
-  --ink: #201d18;
-  --muted: #6d675d;
-  --line: #cfc5b4;
-  --accent: #2457d6;
-  --focus-ring: #2457d6;
-  --radius-sm: 8px;
-  --radius: 14px;
-  --radius-lg: 22px;
-  --shadow: 0 8px 24px rgb(32 29 24 / 12%);
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --font-rounded: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif;
+
+  /* neutral roles — light */
+  --riot-paper: #ECE7DB;
+  --riot-surface: #F8F4E9;
+  --riot-ink: #17160F;
+  --riot-ink-soft: #5F594F;
+  --riot-line: #17160F;
+
+  /* Night Garden (default) — light */
+  --riot-structure: #642B58;
+  --riot-on-structure: #FFFFFF;
+  --riot-action: #D1216E;
+  --riot-on-action: #FFFFFF;
+  --riot-quiet: #AEB8A0;
+  --riot-on-quiet: #17160F;
+  --riot-signal: #E9F056;
+  --riot-on-signal: #17160F;
+  --riot-focus: #642B58;
+
+  /* typography — WU-005 adds the self-hosted @font-face; stacks fall back to system */
+  --riot-display: "Anton", Impact, "Arial Narrow", sans-serif;
+  --riot-body: "Work Sans", system-ui, -apple-system, sans-serif;
+  --riot-mono: "Space Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* one spacing scale */
+  --riot-space-1: 4px;
+  --riot-space-2: 8px;
+  --riot-space-3: 12px;
+  --riot-space-4: 16px;
+  --riot-space-5: 24px;
+  --riot-space-6: 32px;
+
+  /* square / lightly-eased corners, hard 2px rules, deliberate offset shadow */
+  --riot-radius: 2px;
+  --riot-rule: 2px;
+  --riot-shadow: 3px 3px 0 var(--riot-line);
+}
+
+:root[data-riot-theme="night-garden"] {
+  --riot-structure: #642B58; --riot-on-structure: #FFFFFF;
+  --riot-action: #D1216E; --riot-on-action: #FFFFFF;
+  --riot-quiet: #AEB8A0; --riot-on-quiet: #17160F;
+  --riot-signal: #E9F056; --riot-on-signal: #17160F;
+  --riot-focus: #642B58;
+}
+:root[data-riot-theme="repair-picnic"] {
+  --riot-structure: #351E28; --riot-on-structure: #FFFFFF;
+  --riot-action: #FF5C34; --riot-on-action: #17160F;
+  --riot-quiet: #AEB8A0; --riot-on-quiet: #17160F;
+  --riot-signal: #D3B86A; --riot-on-signal: #17160F;
+  --riot-focus: #351E28;
+}
+:root[data-riot-theme="living-network"] {
+  --riot-structure: #006B62; --riot-on-structure: #FFFFFF;
+  --riot-action: #D1216E; --riot-on-action: #FFFFFF;
+  --riot-quiet: #B8DFBD; --riot-on-quiet: #17160F;
+  --riot-signal: #D5A83F; --riot-on-signal: #17160F;
+  --riot-focus: #006B62;
+}
+:root[data-riot-theme="deep-amaranth"] {
+  --riot-structure: #642B58; --riot-on-structure: #FFFFFF;
+  --riot-action: #D1216E; --riot-on-action: #FFFFFF;
+  --riot-quiet: #C9AEC0; --riot-on-quiet: #17160F;
+  --riot-signal: #E8B4CE; --riot-on-signal: #17160F;
+  --riot-focus: #642B58;
+}
+:root[data-riot-theme="signal-chartreuse"] {
+  --riot-structure: #C8E63C; --riot-on-structure: #17160F;
+  --riot-action: #D1216E; --riot-on-action: #FFFFFF;
+  --riot-quiet: #DDE8A3; --riot-on-quiet: #17160F;
+  --riot-signal: #F0A7C7; --riot-on-signal: #17160F;
+  --riot-focus: #D1216E;
+}
+:root[data-riot-theme="burnt-tomato"] {
+  --riot-structure: #E94B35; --riot-on-structure: #17160F;
+  --riot-action: #D1216E; --riot-on-action: #FFFFFF;
+  --riot-quiet: #F1B2A5; --riot-on-quiet: #17160F;
+  --riot-signal: #E5B54B; --riot-on-signal: #17160F;
+  --riot-focus: #E94B35;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #181714;
-    --surface: #24221e;
-    --ink: #f7f1e6;
-    --muted: #b9b0a2;
-    --line: #4b463e;
-    --accent: #8ab4ff;
-    --focus-ring: #8ab4ff;
-    --shadow: 0 8px 24px rgb(0 0 0 / 30%);
+    /* neutral roles — dark */
+    --riot-paper: #17160F;
+    --riot-surface: #242219;
+    --riot-ink: #F5F0E4;
+    --riot-ink-soft: #C8C1B4;
+    --riot-line: #8D8679;
+
+    /* Night Garden (default) — dark */
+    --riot-structure: #B982AD; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #7F8975; --riot-on-quiet: #17160F;
+    --riot-signal: #E9F056; --riot-on-signal: #17160F;
+    --riot-focus: #E9F056;
+  }
+  :root[data-riot-theme="night-garden"] {
+    --riot-structure: #B982AD; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #7F8975; --riot-on-quiet: #17160F;
+    --riot-signal: #E9F056; --riot-on-signal: #17160F;
+    --riot-focus: #E9F056;
+  }
+  :root[data-riot-theme="repair-picnic"] {
+    --riot-structure: #B07A91; --riot-on-structure: #17160F;
+    --riot-action: #FF7A57; --riot-on-action: #17160F;
+    --riot-quiet: #909A84; --riot-on-quiet: #17160F;
+    --riot-signal: #D7BF72; --riot-on-signal: #17160F;
+    --riot-focus: #FF7A57;
+  }
+  :root[data-riot-theme="living-network"] {
+    --riot-structure: #4FB5A9; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #8FC99B; --riot-on-quiet: #17160F;
+    --riot-signal: #E0B94C; --riot-on-signal: #17160F;
+    --riot-focus: #8FC99B;
+  }
+  :root[data-riot-theme="deep-amaranth"] {
+    --riot-structure: #B982AD; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #96778E; --riot-on-quiet: #17160F;
+    --riot-signal: #D993B2; --riot-on-signal: #17160F;
+    --riot-focus: #B982AD;
+  }
+  :root[data-riot-theme="signal-chartreuse"] {
+    --riot-structure: #D8ED5A; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #9DAA67; --riot-on-quiet: #17160F;
+    --riot-signal: #E79BBD; --riot-on-signal: #17160F;
+    --riot-focus: #D8ED5A;
+  }
+  :root[data-riot-theme="burnt-tomato"] {
+    --riot-structure: #F06A50; --riot-on-structure: #17160F;
+    --riot-action: #E45A96; --riot-on-action: #17160F;
+    --riot-quiet: #B9786B; --riot-on-quiet: #17160F;
+    --riot-signal: #E0B94C; --riot-on-signal: #17160F;
+    --riot-focus: #E0B94C;
   }
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  min-height: 100%;
-}
-
+*, *::before, *::after { box-sizing: border-box; }
+html, body { min-height: 100%; }
 body {
   margin: 0;
   padding: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--font-rounded);
+  background: var(--riot-paper);
+  color: var(--riot-ink);
+  font-family: var(--riot-body);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-button,
-input,
-select,
-textarea,
-[role="button"] {
-  min-height: 44px;
-}
-
-:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 3px;
-}
-
+button, input, select, textarea { font: inherit; color: inherit; }
+button, input, select, textarea, [role="button"] { min-height: 44px; }
+:focus-visible { outline: 3px solid var(--riot-focus); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;

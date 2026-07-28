@@ -2,10 +2,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ed25519_dalek::Signature;
+use tracing::warn;
 use willow25::entry::EntrylikeExt;
 use willow25::groupings::Keylike;
 use zeroize::{Zeroize, Zeroizing};
 
+use riot_core::identity::{AuthorHandle, SpaceHandle};
 use riot_core::import::{
     decode_bundle, decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, ItemStatus,
     MAX_BUNDLE_BYTES,
@@ -25,7 +27,8 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_IDS}
 use riot_core::willow::{
     alert_entry_path_matches_payload, create_signed_alert, entry_id,
     generate_communal_author_for_namespace, generate_space_organizer_author, system_snapshot,
-    AlertDraft, EvidenceAuthor, SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
+    AlertDraft, EvidenceAuthor, NamespaceKind, SignedAlert as CoreSignedAlert, SignedWillowEntry,
+    WillowError,
 };
 
 use crate::community_registry::{CommunityRecord, Relationship, REGISTRY_KEY};
@@ -33,7 +36,8 @@ use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
     CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
     MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
-    PublicIdentity, PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
+    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
+    SyncOutcomeKind, SyncedCommunityCandidate,
 };
 
 pub(crate) enum ProfileState {
@@ -43,7 +47,6 @@ pub(crate) enum ProfileState {
 
 const MAX_RETAINED_DRAFTS: usize = 64;
 const MAX_SELECTED_ENTRY_IDS: usize = 64;
-const MAX_INSTALLED_APPS: usize = 16;
 const MAX_APP_TRUST_MARKERS: usize = 256;
 /// The complete retained inventory must fit one protocol bundle. This caps
 /// aggregate proof/payload retention at 8 MiB before any session clones it.
@@ -128,6 +131,23 @@ pub(crate) struct LocalProfile {
     /// what makes containment a mechanism, not a native-host policy: a stale
     /// session fails *before* it can touch data, with no way to assume authority.
     app_execution_generation: u64,
+    /// The starter-catalog generation this profile was created under. `None` is
+    /// the durable encoding of generation 1 (a profile predating this marker);
+    /// fresh profiles record `Some(2)`. It selects which built-in catalog
+    /// bootstrap resolves and is NEVER derived from a community, author, or
+    /// device identifier. Distinct from `app_execution_generation` above, which
+    /// is a per-session sandbox-invalidation counter.
+    // Recorded at construction; its first production reader (durable persistence
+    // + generation-gated auto-install) lands in WU-001N, so it is dead outside
+    // the inline generation test today — mirrors `followed_site_session` above.
+    #[allow(dead_code)]
+    starter_catalog_generation: Option<u8>,
+    /// At-most-one prepared-but-uncommitted mutation — trust OR app-data. `None`
+    /// except between a `prepare_*` and its `finalize_*`/`discard`. A new
+    /// prepare of either kind supersedes the previous one.
+    /// The native shell's authority lock (WU-002c) spans the host persist that
+    /// sits between those calls; here it is exercised by the crate tests.
+    prepared: Option<PreparedMutation>,
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
@@ -197,6 +217,42 @@ struct StoredInstalledApp {
     app_id: [u8; 32],
     manifest_bytes: Vec<u8>,
     bundle_bytes: Vec<u8>,
+}
+
+/// A trust mutation validated + signed but NOT yet committed to the live store
+/// (WU-002a). Lives only between `prepare_app_trust` and
+/// `finalize_app_trust`/`discard` (at most one per profile); the host durably
+/// records the returned `{app_id, trusted}` in its trusted-ID set in between,
+/// making that durable write the linearization point. `finalize` refuses if the
+/// execution generation moved (a real switch between prepare and finalize), so a
+/// stale prepared mutation can never commit into the wrong context. Cleared on
+/// finalize, discard, a superseding prepare, and the `Active→Failed`/close
+/// transition.
+struct PreparedTrust {
+    /// `app_execution_generation` captured at prepare; finalize refuses if moved.
+    generation: u64,
+    /// The signed trust marker, committed unchanged in finalize.
+    signed: SignedWillowEntry,
+    /// The app id + decision the host records in its durable trusted-ID set.
+    app_id: [u8; 32],
+    trusted: bool,
+}
+
+/// An app-data write signed and encoded for host persistence, but not yet
+/// committed to the live store.
+struct PreparedAppData {
+    /// `app_execution_generation` captured at prepare.
+    generation: u64,
+    /// The signed entry committed unchanged by finalize.
+    signed: SignedWillowEntry,
+    /// Canonical bundle bytes persisted and replayed by the host.
+    receipt: Vec<u8>,
+}
+
+/// The single prepared mutation a profile may hold.
+enum PreparedMutation {
+    Trust(PreparedTrust),
+    AppData(PreparedAppData),
 }
 
 pub(crate) struct StoredPreview {
@@ -295,27 +351,69 @@ pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
         // organizer — and the identity is fixed before it is sealed, so creating a
         // space never rotates the signing key.
         let author = generate_space_organizer_author().map_err(map_author_error)?;
-        Ok(profile_with_author(store, author))
+        // Fresh profile: generation 2 (advertises + auto-installs the current
+        // catalog).
+        Ok(profile_with_author(store, author, Some(2)))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
     }
 }
 
+/// Validate a persisted starter-catalog generation before it is trusted to
+/// select a built-in catalog bootstrap. `None` is the durable encoding of
+/// generation 1; `Some(1)`/`Some(2)` are the known generations. Anything else is
+/// a corrupt or forward-dated marker and fails closed with `InvalidInput` rather
+/// than silently bootstrapping an unknown catalog. Shared by every restore seam
+/// so no path can admit an out-of-range generation.
+fn validate_starter_catalog_generation(generation: Option<u8>) -> Result<Option<u8>, MobileError> {
+    match generation {
+        None | Some(1) | Some(2) => Ok(generation),
+        Some(_) => Err(MobileError::InvalidInput),
+    }
+}
+
 pub(crate) fn open_profile_from_sealed_identity(
     mut wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // Validate the persisted marker before any author or store is built so a
+        // corrupt generation fails closed without side effects.
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
         let key = exact_wrapping_key(&wrapping_key)?;
         let author = EvidenceAuthor::open_sealed_identity(&key, &sealed_identity)
             .map_err(map_author_error)?;
         let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        Ok(profile_with_author(store, author))
+        // Restore path: retain the persisted generation exactly (`None` == the
+        // durable encoding of generation 1); never re-derive it as a fresh open.
+        Ok(profile_with_author(store, author, generation))
     }));
     wrapping_key.zeroize();
     match result {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+/// Restores an identityless local profile (no sealed identity to reopen) while
+/// retaining the persisted starter-catalog generation. An identityless
+/// persisted profile is NOT fresh: it mints a bootstrap author like a fresh open
+/// but keeps its grandfathered generation (`None` stays generation 1) instead of
+/// taking the fresh `Some(2)` marker. Distinct from `open_local_profile`, whose
+/// no-argument meaning remains "truly fresh profile, generation 2".
+pub(crate) fn open_local_profile_for_starter_catalog_generation(
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
+        let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
+        Ok(profile_with_author(store, author, generation))
+    })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
     }
@@ -343,7 +441,46 @@ pub(crate) fn open_local_profile_with_database(
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
         let author = generate_space_organizer_author().map_err(map_author_error)?;
-        Ok(profile_with_author_and_db(store, author, Some(db_handle)))
+        // Fresh durable profile: generation 2.
+        Ok(profile_with_author_and_db(
+            store,
+            author,
+            Some(db_handle),
+            Some(2),
+        ))
+    })) {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+/// Restores an identityless local profile backed by a durable SQLite database at
+/// `db_path`, retaining the persisted starter-catalog generation. Combines
+/// `open_local_profile_with_database` durability with the
+/// generation-preservation of `open_local_profile_for_starter_catalog_generation`
+/// — an identityless persisted profile is not fresh, so its grandfathered marker
+/// is kept rather than materialized as `Some(2)`.
+pub(crate) fn open_local_profile_with_database_for_starter_catalog_generation(
+    db_path: String,
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
+        let database = riot_core::store::RiotDatabase::open(
+            &db_path,
+            riot_core::store::DatabaseConfig::default(),
+        )
+        .map_err(map_database_error)?;
+        let db_handle = database.clone();
+        let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
+        Ok(profile_with_author_and_db(
+            store,
+            author,
+            Some(db_handle),
+            generation,
+        ))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
@@ -357,8 +494,12 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
     db_path: String,
     mut wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // Validate the persisted marker before opening the database so a corrupt
+        // generation fails closed without touching durable state.
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
         let database = riot_core::store::RiotDatabase::open(
             &db_path,
             riot_core::store::DatabaseConfig::default(),
@@ -370,7 +511,9 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
             .map_err(map_author_error)?;
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        let profile = profile_with_author_and_db(store, author, Some(db_handle));
+        // Restore path: retain the persisted generation exactly (`None` == the
+        // durable encoding of generation 1).
+        let profile = profile_with_author_and_db(store, author, Some(db_handle), generation);
         // Durable multi-community restore: swap the active community's own sealed
         // author in over the just-restored primary identity, and reproject its
         // content, so a reopen lands on the same community with the same Home.
@@ -392,14 +535,19 @@ fn map_database_error(error: riot_core::store::DatabaseError) -> MobileError {
     MobileError::Database
 }
 
-fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<MobileProfile> {
-    profile_with_author_and_db(store, author, None)
+fn profile_with_author(
+    store: EvidenceStore,
+    author: EvidenceAuthor,
+    starter_catalog_generation: Option<u8>,
+) -> Arc<MobileProfile> {
+    profile_with_author_and_db(store, author, None, starter_catalog_generation)
 }
 
 fn profile_with_author_and_db(
     store: EvidenceStore,
     author: EvidenceAuthor,
     db: Option<riot_core::store::RiotDatabase>,
+    starter_catalog_generation: Option<u8>,
 ) -> Arc<MobileProfile> {
     let (registry, registry_quarantined) = load_registry(db.as_ref());
     Arc::new(MobileProfile {
@@ -421,6 +569,8 @@ fn profile_with_author_and_db(
             demo_mode: None,
             joined_others_space: false,
             app_execution_generation: 0,
+            starter_catalog_generation,
+            prepared: None,
             db,
             registry,
             community_authors: std::collections::HashMap::new(),
@@ -468,6 +618,86 @@ pub(crate) fn identity(inner: &Arc<Mutex<ProfileState>>) -> Result<PublicIdentit
             namespace_id: hex(&identity.namespace_id),
             signing_key_id: hex(&identity.signing_key_id),
         })
+    })
+}
+
+/// Mints the user's Earthstar-style author handle for the active community:
+/// `@<shortname>.<52-char base32 key>`. The shortname is read from the active
+/// community's registry record; if none is set, returns `InvalidInput` (the UI
+/// should prompt the user to choose one via `set_handle_shortname`). The suffix
+/// encodes the full 32-byte signing key, so the handle is self-certifying.
+pub(crate) fn my_author_handle(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let active_ns = profile.author.identity().namespace_id;
+        let shortname = profile
+            .registry
+            .find(&active_ns)
+            .and_then(|r| r.handle_shortname.clone())
+            .ok_or(MobileError::InvalidInput)?;
+        let subspace_key = profile.author.identity().signing_key_id;
+        Ok(AuthorHandle::for_subspace(&shortname, &subspace_key).encode())
+    })
+}
+
+/// Mints the active community's space handle: `+<shortname>.<suffix>` for a
+/// communal space. Reads the shortname from the registry; `InvalidInput` if none.
+pub(crate) fn my_space_handle(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let namespace_id = profile.author.identity().namespace_id;
+        let shortname = profile
+            .registry
+            .find(&namespace_id)
+            .and_then(|r| r.handle_shortname.clone())
+            .ok_or(MobileError::InvalidInput)?;
+        Ok(SpaceHandle::for_namespace(&shortname, &namespace_id).encode())
+    })
+}
+
+/// Sets the handle shortname for the active community, persisting it to the
+/// registry. Validates the shortname (3..=32 chars of `[a-z0-9-]`); a bad
+/// shortname is `InvalidInput`.
+pub(crate) fn set_handle_shortname(
+    inner: &Arc<Mutex<ProfileState>>,
+    shortname: String,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        if riot_core::identity::validate_shortname(&shortname).is_err() {
+            return Err(MobileError::InvalidInput);
+        }
+        let active_ns = profile.author.identity().namespace_id;
+        if let Some(record) = profile.registry.find_mut(&active_ns) {
+            record.handle_shortname = Some(shortname);
+        } else {
+            return Err(MobileError::CommunityUnavailable);
+        }
+        persist_registry(profile)?;
+        Ok(())
+    })
+}
+
+/// Parses an `@author.<suffix>` handle, returning the verified 32-byte
+/// subspace key (hex) and the decorative shortname. Self-certifying: the key is
+/// recovered from the suffix alone.
+pub(crate) fn parse_author_handle(handle: String) -> Result<ParsedAuthorHandle, MobileError> {
+    let parsed = AuthorHandle::parse(&handle).map_err(|_| MobileError::InvalidInput)?;
+    Ok(ParsedAuthorHandle {
+        subspace_key_hex: hex(parsed.subspace_key()),
+        shortname: parsed.shortname().to_string(),
+    })
+}
+
+/// Parses a `+space.<suffix>` / `-space.<suffix>` handle, returning the verified
+/// namespace id (hex), the kind ("communal"/"owned"), and the shortname.
+pub(crate) fn parse_space_handle(handle: String) -> Result<ParsedSpaceHandle, MobileError> {
+    let parsed = SpaceHandle::parse(&handle).map_err(|_| MobileError::InvalidInput)?;
+    let kind = match parsed.kind() {
+        NamespaceKind::Communal => "communal",
+        NamespaceKind::Owned => "owned",
+    };
+    Ok(ParsedSpaceHandle {
+        namespace_id_hex: hex(parsed.namespace_id()),
+        kind: kind.to_string(),
+        shortname: parsed.shortname().to_string(),
     })
 }
 
@@ -1821,6 +2051,67 @@ pub(crate) fn inspect_core(
     inspect_core_with_root(store, bytes, route, None)
 }
 
+/// The import route recorded for entries pulled from an anchor over
+/// `riot/sync/2 ReadCommitted` (the Slice-2 non-local transport). Like every
+/// route it names provenance and grants nothing.
+#[cfg(feature = "net")]
+const ANCHOR_PULL_ROUTE: &str = "anchor-pull";
+
+/// Import a set of ALREADY-VERIFIED signed entries pulled from an anchor into the
+/// phone's willow store through the canonical preview→plan→commit boundary
+/// (`session.rs`) — the SAME path a peer bundle or the demo space takes. Returns
+/// the count actually committed.
+///
+/// `root` is the followed community/site root (the ticket's O namespace): it lets
+/// `inspect` admit owned editorial entries rooted at that key; communal entries
+/// ignore it. The store re-verifies every frame on the way in (capability +
+/// Meadowcap + payload digest + schema), so this is NOT an accept-all path even
+/// though the caller already verified — a non-admissible frame (e.g. the reserved
+/// `/manifest`, validated on its own path and never stored as content) is simply
+/// not eligible and is never committed. Nothing touches `sync_inventory`:
+/// anchor-pulled content is not re-offered to nearby peers from here.
+#[cfg(feature = "net")]
+pub(crate) fn import_anchor_pulled_namespace(
+    inner: &Arc<Mutex<ProfileState>>,
+    root: [u8; 32],
+    entries: &[SignedWillowEntry],
+) -> Result<usize, MobileError> {
+    with_active(inner, |profile| {
+        let mut imported = 0usize;
+        // Import ONE entry at a time. A pulled entry the store deliberately does
+        // not admit as willow content — the reserved `/manifest`, which is
+        // validated on its own path and never stored — fails the producer schema
+        // gate inside `encode_bundle` (`UnsupportedSchema`). That is CORRECT, not
+        // a fault: skip it and keep going, rather than let one non-content entry
+        // poison the whole namespace's import. Content entries (owned `/articles`,
+        // communal newswire/alerts) each go through the canonical
+        // preview→plan→commit boundary, which re-verifies every frame.
+        for entry in entries {
+            let bytes = match encode_bundle(std::slice::from_ref(entry)) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            // (the reserved /manifest lands here and is skipped: see above)
+            // A fresh preview replaces any stale session-wide slot, exactly as the
+            // demo/import paths do; a live sync session's in-flight review is a
+            // caller concern (Slice 2 imports on a quiescent profile).
+            profile.preview = None;
+            profile.plan = None;
+            let preview =
+                inspect_core_with_root(&profile.store, &bytes, ANCHOR_PULL_ROUTE, Some(root))?;
+            let eligible = preview.eligible_count().map_err(map_core_error)?;
+            if eligible > 0 {
+                let plan = preview.plan_all().map_err(map_core_error)?;
+                match plan.commit().map_err(map_core_error)? {
+                    CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+                }
+                imported += eligible;
+            }
+        }
+        Ok(imported)
+    })
+}
+
 /// `inspect_core` for an admission path that knows the owned site it follows.
 /// The sync commit path passes the synced namespace so owned editorial entries
 /// are admitted in lockstep with `inspectable_entries` (both keyed on that same
@@ -1953,24 +2244,7 @@ fn remember_entry(entries: &mut Vec<CurrentEntry>, entry: CurrentEntry) {
     }
 }
 
-/// Track a locally-committed signed entry in the ACTIVE community's sync
-/// inventory so it can traverse the nearby bridge (Risk 16 — the newswire
-/// create/post path, which previously committed without tracking, so newswire
-/// content could never be shared). Mirrors how the alert sign/import paths keep
-/// the inventory complete. A newswire entry IS a live entry in the active
-/// namespace, so this PRESERVES the load-bearing
-/// `inventory == active_namespace_live_ids` invariant (the isolation guarantee):
-/// it only ever adds an entry that already belongs to the active namespace, and
-/// `install_sync_inventory` re-checks that equality and fails closed otherwise.
-pub(crate) fn track_committed_entry(
-    profile: &mut LocalProfile,
-    signed: &SignedWillowEntry,
-) -> Result<(), MobileError> {
-    let next = prospective_sync_inventory(profile, std::slice::from_ref(signed))?;
-    install_sync_inventory(profile, next)
-}
-
-fn prospective_sync_inventory(
+pub(crate) fn prospective_sync_inventory(
     profile: &LocalProfile,
     incoming: &[SignedWillowEntry],
 ) -> Result<Vec<SignedWillowEntry>, MobileError> {
@@ -2028,7 +2302,7 @@ fn prospective_sync_inventory(
 /// held community's entries (Unit 3), but sync — like the board — is scoped to
 /// the selected community, so the inventory is built and checked against exactly
 /// this namespace, never the whole store.
-fn active_namespace_live_ids(
+pub(crate) fn active_namespace_live_ids(
     profile: &LocalProfile,
 ) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
     let Some(space) = profile.space.as_ref() else {
@@ -2130,7 +2404,7 @@ pub(crate) fn build_followed_site_offer(
     Ok(offer)
 }
 
-fn install_sync_inventory(
+pub(crate) fn install_sync_inventory(
     profile: &mut LocalProfile,
     mut inventory: Vec<SignedWillowEntry>,
 ) -> Result<(), MobileError> {
@@ -2180,7 +2454,7 @@ fn advance_app_write_floor(
     Ok(())
 }
 
-fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
+pub(crate) fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
     let mut live_ids = active_namespace_live_ids(profile)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
@@ -2305,6 +2579,11 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
     use riot_core::session::SessionError;
 
+    // Capture the precise session error before it is collapsed to a coarse
+    // MobileError. The coarse code crosses to Swift; this is the "logs get
+    // detail" seam. Debug formatting keeps variant + payload in the log line.
+    warn!(target: "riot::sync", error = ?error, "SessionError collapsed to MobileError");
+
     match error {
         SessionError::StoreFull => MobileError::StoreFull,
         SessionError::SessionLimit => MobileError::SessionLimit,
@@ -2325,6 +2604,9 @@ pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileE
 }
 
 fn map_author_error(error: WillowError) -> MobileError {
+    // Author/willow signing failures are otherwise invisible once collapsed;
+    // log the precise variant for reply/post diagnostics.
+    warn!(target: "riot::newswire", error = ?error, "WillowError collapsed to MobileError");
     match error {
         WillowError::EntropyUnavailable => MobileError::EntropyUnavailable,
         WillowError::ClockUnavailable => MobileError::ClockUnavailable,
@@ -2418,14 +2700,31 @@ fn install_pair(
     let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
     let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
 
-    if !profile
+    use riot_core::apps::admission::{preflight, AdmissionOutcome};
+
+    let already_held = profile
         .installed_apps
         .iter()
-        .any(|app| app.app_id == app_id)
-    {
-        if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
-            return Err(MobileError::SessionLimit);
-        }
+        .any(|app| app.app_id == app_id);
+    let held_aggregate_bytes: usize = profile
+        .installed_apps
+        .iter()
+        .map(|app| app.manifest_bytes.len() + app.bundle_bytes.len())
+        .sum();
+    let pair_bytes = manifest_bytes.len() + bundle_bytes.len();
+
+    match preflight(
+        profile.installed_apps.len(),
+        held_aggregate_bytes,
+        already_held,
+        pair_bytes,
+    ) {
+        AdmissionOutcome::RefuseCount => return Err(MobileError::SessionLimit),
+        AdmissionOutcome::RefuseBytes => return Err(MobileError::StoreFull),
+        AdmissionOutcome::Admit => {}
+    }
+
+    if !already_held {
         profile.installed_apps.push(StoredInstalledApp {
             app_id,
             manifest_bytes,
@@ -2580,6 +2879,7 @@ pub(crate) fn register_active_community(
         last_sync_unix_seconds: None,
         fetch_url: None,
         require_floor: None,
+        handle_shortname: None,
     });
     profile.registry.active = Some(namespace_id);
     persist_registry(profile)?;
@@ -2690,6 +2990,128 @@ fn restore_active_community(
             }
         }
         Ok(())
+    })
+}
+
+/// Discover the communities whose entries an anchor-relay pull just imported, so
+/// the app can turn "imported N entries" into "walk into this place and read it".
+///
+/// Two shapes surface here, best-first:
+///  1. A full newswire community — a `SpaceDescriptorV1` is now in the store. We
+///     return its name, its projected post count, and its contributor count, plus
+///     the descriptor id the wire projects from. Walking in shows the wire + the
+///     people.
+///  2. An alert-bearing namespace with no descriptor — one of the pulled
+///     namespaces holds standalone alert entries (the legacy board's content).
+///     We return the alert count and the distinct-signer count so the board still
+///     has content and attribution, even without a wire to project.
+///
+/// Read-only: nothing is minted, joined, or reprojected here. The caller adopts a
+/// candidate through the ordinary join/switch paths.
+pub(crate) fn discover_synced_communities(
+    inner: &Arc<Mutex<ProfileState>>,
+    pulled_namespace_ids: Vec<String>,
+) -> Result<Vec<SyncedCommunityCandidate>, MobileError> {
+    with_active(inner, |profile| {
+        let clock = riot_core::newswire::ProjectionClockV1::system()
+            .map_err(|_| MobileError::ClockUnavailable)?;
+        let mut candidates: Vec<SyncedCommunityCandidate> = Vec::new();
+        let mut covered: std::collections::BTreeSet<[u8; 32]> = std::collections::BTreeSet::new();
+
+        // (1) Full newswire communities: every descriptor now in the store.
+        let descriptors = riot_core::newswire::discover_space_descriptors(&profile.store)
+            .map_err(|_| MobileError::Internal)?;
+        for record in &descriptors {
+            let riot_core::newswire::NewswirePayload::SpaceDescriptor(descriptor) =
+                record.payload()
+            else {
+                continue;
+            };
+            let descriptor_id = record.entry_id();
+            let namespace_id = descriptor.namespace_id;
+            covered.insert(namespace_id);
+            // Project the wire so the person sees how much is happening before
+            // walking in. A projection failure must not hide the community —
+            // fall back to zero counts rather than dropping the candidate.
+            let (post_count, contributor_count) =
+                match riot_core::newswire::project_space(&profile.store, descriptor_id, clock) {
+                    Ok(projection) => {
+                        let posts = (projection.open_wire.len()
+                            + projection.front_page.len()
+                            + projection.earlier.len()) as u32;
+                        let contributors = riot_core::newswire::contributors_for_space(
+                            &profile.store,
+                            descriptor_id,
+                            clock,
+                        )
+                        .map(|rows| rows.len() as u32)
+                        .unwrap_or(0);
+                        (posts, contributors)
+                    }
+                    Err(_) => (0, 0),
+                };
+            candidates.push(SyncedCommunityCandidate {
+                namespace_id: hex(&namespace_id),
+                descriptor_entry_id: Some(hex(&descriptor_id)),
+                name: Some(descriptor.name.clone()),
+                post_count,
+                alert_count: 0,
+                contributor_count,
+            });
+        }
+
+        // (2) Alert-bearing namespaces among the ones the pull touched, with no
+        //     descriptor of their own. Bounded to the pulled set so this never
+        //     scans an unrelated community.
+        let all_prefix =
+            riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+        for raw in &pulled_namespace_ids {
+            let Ok(namespace_id) = parse_entry_id(raw) else {
+                continue;
+            };
+            if covered.contains(&namespace_id) {
+                continue;
+            }
+            let prefixed = profile
+                .store
+                .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+                .map_err(map_core_error)?;
+            let mut alert_count = 0u32;
+            let mut signers: std::collections::BTreeSet<[u8; 32]> =
+                std::collections::BTreeSet::new();
+            for (_id, entry, payload) in prefixed {
+                // Alerts only — mirror `reproject_active`'s exclusion so the count
+                // matches what the board would actually show.
+                if riot_core::apps::entry::is_app_data_entry(&entry)
+                    || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
+                    || is_profile_prefixed(entry.path())
+                    || riot_core::newswire::is_newswire_prefix(entry.path())
+                    || riot_core::willow::site_paths::is_owned_editorial_entry(&entry)
+                    || riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
+                {
+                    continue;
+                }
+                let Some(payload) = payload else { continue };
+                if decode_alert(&payload).is_err() {
+                    continue;
+                }
+                alert_count += 1;
+                signers.insert(*entry.subspace_id().as_bytes());
+            }
+            if alert_count > 0 {
+                covered.insert(namespace_id);
+                candidates.push(SyncedCommunityCandidate {
+                    namespace_id: hex(&namespace_id),
+                    descriptor_entry_id: None,
+                    name: None,
+                    post_count: 0,
+                    alert_count,
+                    contributor_count: signers.len() as u32,
+                });
+            }
+        }
+
+        Ok(candidates)
     })
 }
 
@@ -2810,6 +3232,7 @@ pub(crate) fn follow_site(
             last_sync_unix_seconds: None,
             fetch_url: ticket.url.clone(),
             require_floor: Some(ticket.require_raw.clone()),
+            handle_shortname: None,
         });
         persist_registry(profile)?;
         let record = profile
@@ -2843,6 +3266,7 @@ impl MobileProfile {
                 last_sync_unix_seconds: None,
                 fetch_url: None,
                 require_floor: None,
+                handle_shortname: None,
             });
             persist_registry(profile)?;
             Ok(hex(&root))
@@ -3007,6 +3431,7 @@ pub(crate) fn switch_community(
             .community_sync_inventory
             .remove(&target_ns)
             .unwrap_or_default();
+        refresh_app_trust_markers(profile)?;
         persist_registry(profile)?;
 
         let record = profile
@@ -3102,72 +3527,141 @@ pub(crate) fn community_registry_quarantined(
     with_active(inner, |profile| Ok(profile.registry_quarantined))
 }
 
+/// Validate authority + sign the trust marker WITHOUT mutating the live store,
+/// returning a `PreparedTrust` the caller stores in `profile.prepared`.
+/// This is the first half of `set_app_trust`, verbatim up to and including
+/// `sign_local_app_entry`; the store mutation + generation bump move to
+/// `finalize_trust_locked`. Behavior when the two run back-to-back under one
+/// lock is byte-identical to the old single-shot path.
+fn prepare_trust_locked(
+    profile: &mut LocalProfile,
+    app_id: String,
+    trusted: bool,
+) -> Result<PreparedTrust, MobileError> {
+    use riot_core::apps::index::app_index_trust_path;
+    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
+
+    // A nearby peer must NOT block an approval (see the long note that used to
+    // live in set_app_trust): drop the sync rather than the approval.
+    if sync_session_is_active(profile) {
+        profile.sync_session = None;
+    }
+    // Only a space's organizer may approve an app for it.
+    if let Some(refusal) = organizer_refusal(profile) {
+        return Err(refusal);
+    }
+    let app_id = parse_entry_id(&app_id)?;
+    if !profile
+        .app_trust_markers
+        .iter()
+        .any(|marker| marker.app_id == app_id)
+        && profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS
+    {
+        return Err(MobileError::SessionLimit);
+    }
+    let timestamp = next_app_write_timestamp(profile)?;
+    let kind = if trusted {
+        TrustMarkerKind::Trust
+    } else {
+        TrustMarkerKind::Revoke
+    };
+    let marker = TrustMarker {
+        app_id,
+        author_subspace_id: *profile.author.subspace_id().as_bytes(),
+        kind,
+        timestamp_micros: timestamp,
+    };
+    let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
+    let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
+        .map_err(map_apps_error)?;
+    let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
+    Ok(PreparedTrust {
+        generation: profile.app_execution_generation,
+        signed,
+        app_id,
+        trusted,
+    })
+}
+
+/// Commit a `PreparedTrust` to the live store + advance the execution
+/// generation. Fails closed if the generation moved since prepare (a real
+/// namespace/community switch happened in between), leaving trust uncommitted.
+/// Idempotent: committing the same signed marker again is an LWW no-op at its
+/// coordinate, so a crash-retry that re-issues cannot double-apply.
+fn finalize_trust_locked(
+    profile: &mut LocalProfile,
+    prepared: PreparedTrust,
+) -> Result<(), MobileError> {
+    if prepared.generation != profile.app_execution_generation {
+        // Authority moved under us; the prepared mutation is stale. The slot was
+        // already taken by the caller, so nothing lingers.
+        return Err(MobileError::Internal);
+    }
+    commit_local_app_entries(profile, vec![prepared.signed])?;
+    // Any trust change — grant OR revoke — advances the execution generation,
+    // invalidating every `AppExecutionSession` opened before it.
+    bump_app_execution_generation(profile);
+    Ok(())
+}
+
+/// Grant or revoke trust in one locked step (validate → sign → commit → bump),
+/// byte-identical to the pre-WU-002a behavior. Native callers unchanged.
 pub(crate) fn set_app_trust(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: String,
     trusted: bool,
 ) -> Result<(), MobileError> {
-    use riot_core::apps::index::app_index_trust_path;
-    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
-
     with_active(inner, |profile| {
-        // A nearby peer must NOT block an approval. Phones auto-connect now, so
-        // a sync session is open most of the time an organizer is standing next
-        // to someone — and refusing here made "Let everyone in this space use
-        // this" fail with an unexplained error exactly when it was tapped.
-        //
-        // The guard existed because writing the trust marker goes through the
-        // store's shared inspect/plan slot, which an in-flight sync review is
-        // also using. So drop the sync rather than the approval: the approval is
-        // a deliberate human act, the sync is background chatter that reconnects
-        // on its own. Anything mid-review is discarded, not half-applied.
-        if sync_session_is_active(profile) {
-            profile.sync_session = None;
-        }
-        // Only a space's organizer may approve an app for it. Without this a
-        // member could self-approve any app, which would make the trust gate
-        // (the one human review moment in the whole design) meaningless.
-        //
-        // The gate is unchanged; what changed is that it now SAYS WHY. It used to
-        // return `InvalidInput` — the same code as a malformed app id — so the
-        // sheet closed with nothing to show and the app never appeared. A person
-        // who had done nothing wrong was locked out in silence.
-        if let Some(refusal) = organizer_refusal(profile) {
-            return Err(refusal);
-        }
-        let app_id = parse_entry_id(&app_id)?;
-        if !profile
-            .app_trust_markers
-            .iter()
-            .any(|marker| marker.app_id == app_id)
-            && profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS
-        {
-            return Err(MobileError::SessionLimit);
-        }
-        let timestamp = next_app_write_timestamp(profile)?;
-        let kind = if trusted {
-            TrustMarkerKind::Trust
-        } else {
-            TrustMarkerKind::Revoke
+        let prepared = prepare_trust_locked(profile, app_id, trusted)?;
+        finalize_trust_locked(profile, prepared)
+    })
+}
+
+/// Two-phase trust, phase 1 (WU-002a): validate + sign + hold the prepared
+/// mutation WITHOUT mutating the live store. Returns `{app_id, trusted}` for the
+/// host to record in its durable trusted-ID set; the durable write is the
+/// linearization point. A second prepare supersedes an abandoned one.
+pub(crate) fn prepare_app_trust(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    trusted: bool,
+) -> Result<crate::apps_ffi::PreparedTrustRecord, MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared = None; // supersede any abandoned prepare
+        let prepared = prepare_trust_locked(profile, app_id, trusted)?;
+        let record = crate::apps_ffi::PreparedTrustRecord {
+            app_id: hex(&prepared.app_id),
+            trusted: prepared.trusted,
         };
-        let marker = TrustMarker {
-            app_id,
-            author_subspace_id: *profile.author.subspace_id().as_bytes(),
-            kind,
-            timestamp_micros: timestamp,
-        };
-        let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
-        let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
-            .map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
-        commit_local_app_entries(profile, vec![signed])?;
-        // Any trust change — grant OR revoke — advances the execution
-        // generation, invalidating every `AppExecutionSession` opened before it.
-        // Re-approval therefore does not silently re-authorize a session that was
-        // live across the revoke: a re-approved app runs in a *new* session.
-        bump_app_execution_generation(profile);
+        profile.prepared = Some(PreparedMutation::Trust(prepared));
+        Ok(record)
+    })
+}
+
+/// Two-phase trust, phase 2 (WU-002a): commit the held prepared mutation after
+/// the host has durably persisted its trusted-ID set. Errors (leaving trust
+/// unchanged) if nothing is prepared or the generation moved.
+pub(crate) fn finalize_app_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| match profile.prepared.take() {
+        Some(PreparedMutation::Trust(prepared)) => finalize_trust_locked(profile, prepared),
+        _ => Err(MobileError::Internal),
+    })
+}
+
+/// Drop the prepared mutation without committing. Idempotent; the trust name is
+/// retained for WU-002a native compatibility now that the slot is shared.
+pub(crate) fn discard_prepared_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared = None;
         Ok(())
     })
+}
+
+/// App-data-named alias for clearing the same shared prepared-mutation slot.
+pub(crate) fn discard_prepared_app_data(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<(), MobileError> {
+    discard_prepared_trust(inner)
 }
 
 /// Advance the app-execution generation. Called on every app-trust change and
@@ -3350,6 +3844,38 @@ pub(crate) fn app_execution_list(
 /// the canonical signed bundle bytes so a host can persist app data for replay.
 /// A committed write does NOT advance the generation — an app writing its own
 /// data must not invalidate its own session; only trust and namespace changes do.
+fn prepare_app_data_locked(
+    profile: &mut LocalProfile,
+    app_id: [u8; 32],
+    key: &str,
+    value: &[u8],
+) -> Result<PreparedAppData, MobileError> {
+    if sync_session_is_active(profile) {
+        return Err(MobileError::InvalidInput);
+    }
+    let timestamp = next_app_write_timestamp(profile)?;
+    let path = riot_core::apps::entry::app_data_path(&app_id, key).map_err(map_apps_error)?;
+    let signed = sign_local_app_entry(profile, path, value, timestamp)?;
+    let receipt =
+        encode_bundle(std::slice::from_ref(&signed)).map_err(|_| MobileError::SessionLimit)?;
+    Ok(PreparedAppData {
+        generation: profile.app_execution_generation,
+        signed,
+        receipt,
+    })
+}
+
+fn finalize_app_data_locked(
+    profile: &mut LocalProfile,
+    prepared: PreparedAppData,
+) -> Result<(), MobileError> {
+    if prepared.generation != profile.app_execution_generation {
+        return Err(MobileError::Internal);
+    }
+    commit_local_app_entries(profile, vec![prepared.signed])?;
+    Ok(())
+}
+
 pub(crate) fn app_execution_put_with_receipt(
     inner: &Arc<Mutex<ProfileState>>,
     snap: &AppExecutionSnapshot,
@@ -3358,17 +3884,10 @@ pub(crate) fn app_execution_put_with_receipt(
 ) -> Result<Vec<u8>, MobileError> {
     with_active(inner, |profile| {
         revalidate_execution(profile, snap)?;
-        // Same preview-slot discipline as `app_data_put_with_receipt`: a
-        // store.inspect during an in-flight sync review would clobber it.
-        if sync_session_is_active(profile) {
-            return Err(MobileError::InvalidInput);
-        }
-        let timestamp = next_app_write_timestamp(profile)?;
-        let path =
-            riot_core::apps::entry::app_data_path(&snap.app_id, &key).map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
-        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
-        Ok(bundle_bytes)
+        let prepared = prepare_app_data_locked(profile, snap.app_id, &key, &value)?;
+        let receipt = prepared.receipt.clone();
+        finalize_app_data_locked(profile, prepared)?;
+        Ok(receipt)
     })
 }
 
@@ -3401,11 +3920,76 @@ pub(crate) fn app_data_put_with_receipt(
             return Err(MobileError::InvalidInput);
         }
         let app_id = parse_entry_id(&app_id)?;
-        let timestamp = next_app_write_timestamp(profile)?;
-        let path = riot_core::apps::entry::app_data_path(&app_id, &key).map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
-        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
-        Ok(bundle_bytes)
+        let prepared = prepare_app_data_locked(profile, app_id, &key, &value)?;
+        let receipt = prepared.receipt.clone();
+        finalize_app_data_locked(profile, prepared)?;
+        Ok(receipt)
+    })
+}
+
+/// Phase 1 of an ungated app-data write: return persistence bytes without
+/// mutating the live store, and hold the signed entry for finalize.
+pub(crate) fn prepare_app_data_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    key: String,
+    value: Vec<u8>,
+) -> Result<crate::apps_ffi::PreparedAppDataRecord, MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared = None;
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let app_id = parse_entry_id(&app_id)?;
+        let prepared = prepare_app_data_locked(profile, app_id, &key, &value)?;
+        let record = crate::apps_ffi::PreparedAppDataRecord {
+            receipt: prepared.receipt.clone(),
+        };
+        profile.prepared = Some(PreparedMutation::AppData(prepared));
+        Ok(record)
+    })
+}
+
+/// Phase 2 of an ungated app-data write: commit the mutation held by prepare.
+pub(crate) fn finalize_app_data_put(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| match profile.prepared.take() {
+        Some(PreparedMutation::AppData(prepared)) => finalize_app_data_locked(profile, prepared),
+        _ => Err(MobileError::Internal),
+    })
+}
+
+/// Gated app-execution phase 1: revalidate the session before preparing.
+pub(crate) fn prepare_app_execution_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+    value: Vec<u8>,
+) -> Result<crate::apps_ffi::PreparedAppDataRecord, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        profile.prepared = None;
+        let prepared = prepare_app_data_locked(profile, snap.app_id, &key, &value)?;
+        let record = crate::apps_ffi::PreparedAppDataRecord {
+            receipt: prepared.receipt.clone(),
+        };
+        profile.prepared = Some(PreparedMutation::AppData(prepared));
+        Ok(record)
+    })
+}
+
+/// Gated app-execution phase 2: revalidate again, then commit the held write.
+pub(crate) fn finalize_app_execution_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        match profile.prepared.take() {
+            Some(PreparedMutation::AppData(prepared)) => {
+                finalize_app_data_locked(profile, prepared)
+            }
+            _ => Err(MobileError::Internal),
+        }
     })
 }
 
@@ -3930,7 +4514,7 @@ fn resolve_app_payload_bytes(
     app_id: &[u8; 32],
 ) -> Result<riot_core::apps::index::AppPairBytes, MobileError> {
     use riot_core::apps::index::{app_pair_bytes as indexed_pair_bytes, starter_pair_bytes};
-    use riot_core::apps::starter::STARTER_CATALOG;
+    use riot_core::apps::starter::{CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG};
 
     // Verified at install — install_pair derived app_id from these exact
     // bytes; if installed apps ever persist/reload, the reload path must
@@ -3945,8 +4529,14 @@ fn resolve_app_payload_bytes(
             bundle_bytes: installed.bundle_bytes.clone(),
         });
     }
-    // Built into the binary: no store entries exist for these, ever.
-    if let Some(pair) = starter_pair_bytes(STARTER_CATALOG, app_id) {
+    // Built into the binary: no store entries exist for these, ever. Resolve a
+    // held ID against BOTH catalogs by exact ID — a generation-2 profile can
+    // still hold a carried legacy ID, and a generation-1 profile must resolve
+    // legacy. `starter_pair_bytes` only matches a pair whose bytes re-derive the
+    // requested ID, so trying both never returns the wrong bytes.
+    if let Some(pair) = starter_pair_bytes(CURRENT_STARTER_CATALOG, app_id)
+        .or_else(|| starter_pair_bytes(LEGACY_BUILTIN_CATALOG, app_id))
+    {
         return Ok(pair);
     }
     // Carried: the store holds the only copy. Both halves come from one
@@ -3995,6 +4585,11 @@ fn map_apps_error(error: riot_core::apps::AppsError) -> MobileError {
 }
 
 fn map_sync_error(error: SyncError) -> MobileError {
+    // Capture the precise sync protocol error before it collapses to a coarse
+    // MobileError (SessionLimit / InvalidInput). This is the seam that lets a
+    // failing sync show its real cause (e.g. NamespaceMismatch, MalformedFrame,
+    // InvalidBundle) in Console.app, while Swift still sees only the coarse code.
+    warn!(target: "riot::sync", error = ?error, "SyncError collapsed to MobileError");
     match error {
         SyncError::FrameTooLarge | SyncError::TooManyEntryIds | SyncError::BundleTooLarge => {
             MobileError::SessionLimit
@@ -4032,6 +4627,223 @@ mod tests {
             source_claims: vec!["fixture".into()],
             ai_assisted: false,
         }
+    }
+
+    /// A freshly-opened profile records starter-catalog generation 2. The field
+    /// is `pub(crate)` and `#[cfg(test)]`-invisible to integration tests, so the
+    /// assertion lives here in the crate's inline test module.
+    #[test]
+    fn fresh_profile_is_generation_two() {
+        let profile = open_local_profile().unwrap();
+        let state = lock_unpoisoned(&profile.inner);
+        let ProfileState::Active(local) = &*state else {
+            panic!("profile should be active");
+        };
+        assert_eq!(local.starter_catalog_generation, Some(2));
+    }
+
+    /// WU-001N: both restore families receive the persisted starter-catalog
+    /// generation and retain the exact `Option<u8>` — `None` (legacy generation
+    /// 1), explicit `Some(1)`, and `Some(2)` — while a fresh no-generation open
+    /// stays `Some(2)`. Unknown generations fail closed with `InvalidInput`
+    /// before a profile is constructed. White-box because the field has no
+    /// public getter, so integration tests cannot observe the retained value.
+    #[test]
+    fn restore_uses_persisted_starter_catalog_generation() {
+        fn generation_of(profile: &Arc<MobileProfile>) -> Option<u8> {
+            let state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &*state else {
+                panic!("profile should be active");
+            };
+            local.starter_catalog_generation
+        }
+
+        // Fresh no-generation opens remain generation 2 (fresh-profile semantics
+        // must not change under the new restore seam).
+        assert_eq!(generation_of(&open_local_profile().unwrap()), Some(2));
+
+        // Sealed-identity restore (in-memory) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let restored = open_profile_from_sealed_identity(key, sealed, generation).unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        for bad in [Some(0u8), Some(3u8)] {
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            assert!(matches!(
+                open_profile_from_sealed_identity(key, sealed, bad),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Sealed-identity restore (durable) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db_path = dir.path().join("riot.sqlite");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let restored = open_profile_from_sealed_identity_with_database(
+                db_path.to_string_lossy().into_owned(),
+                key,
+                sealed,
+                generation,
+            )
+            .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            assert!(matches!(
+                open_profile_from_sealed_identity_with_database(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    key,
+                    sealed,
+                    Some(3u8),
+                ),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Identityless local restore (in-memory) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let restored = open_local_profile_for_starter_catalog_generation(generation).unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        for bad in [Some(0u8), Some(3u8)] {
+            assert!(matches!(
+                open_local_profile_for_starter_catalog_generation(bad),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Identityless local restore (durable) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db_path = dir.path().join("riot.sqlite");
+            let restored = open_local_profile_with_database_for_starter_catalog_generation(
+                db_path.to_string_lossy().into_owned(),
+                generation,
+            )
+            .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            assert!(matches!(
+                open_local_profile_with_database_for_starter_catalog_generation(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    Some(0u8),
+                ),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+    }
+
+    /// The same restore contract, entered through the EXPORTED `mobile_api`
+    /// functions rather than this module's internals. The tests above call
+    /// `mobile_state` directly, so nothing exercised the thin UniFFI wrappers a
+    /// native host actually calls — and a wrapper that forwards the wrong
+    /// argument (or drops the generation entirely) would pass every one of them.
+    #[test]
+    fn exported_restore_wrappers_forward_the_generation_they_are_given() {
+        fn generation_of(profile: &Arc<MobileProfile>) -> Option<u8> {
+            let state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &*state else {
+                panic!("profile should be active");
+            };
+            local.starter_catalog_generation
+        }
+
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let restored =
+                crate::mobile_api::open_local_profile_for_starter_catalog_generation(generation)
+                    .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let restored_durable =
+                crate::mobile_api::open_local_profile_with_database_for_starter_catalog_generation(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    generation,
+                )
+                .unwrap();
+            assert_eq!(generation_of(&restored_durable), generation);
+
+            // The sealed-identity wrappers carry the marker too — the restore a
+            // host performs when it DOES have a persisted identity.
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let sealed_restored =
+                crate::mobile_api::open_profile_from_sealed_identity(key, sealed, generation)
+                    .unwrap();
+            assert_eq!(generation_of(&sealed_restored), generation);
+
+            let sealed_dir = tempfile::tempdir().expect("tempdir");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let sealed_durable =
+                crate::mobile_api::open_profile_from_sealed_identity_with_database(
+                    sealed_dir
+                        .path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    key,
+                    sealed,
+                    generation,
+                )
+                .unwrap();
+            assert_eq!(generation_of(&sealed_durable), generation);
+        }
+
+        // Validation is the wrapper's job to forward, not to swallow.
+        assert!(matches!(
+            crate::mobile_api::open_local_profile_for_starter_catalog_generation(Some(3u8)),
+            Err(MobileError::InvalidInput)
+        ));
+    }
+
+    /// WU-002a: the finalize generation guard is LIVE, not a phantom. A real
+    /// generation bump between prepare and finalize (what a community/namespace
+    /// switch does) makes `finalize_app_trust` reject with the marker
+    /// uncommitted. White-box (inline) so the guard branch is genuinely covered.
+    #[test]
+    fn finalize_trust_fails_closed_after_a_generation_bump() {
+        let profile = open_local_profile().unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let rec = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        prepare_app_trust(&profile.inner, rec.app_id.clone(), true).unwrap();
+        // Simulate a switch happening between the host persist and finalize.
+        {
+            let mut state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &mut *state else {
+                panic!("profile should be active");
+            };
+            bump_app_execution_generation(local);
+        }
+        assert!(
+            finalize_app_trust(&profile.inner).is_err(),
+            "a stale prepared trust must fail closed after a generation bump"
+        );
     }
 
     /// Risk 13: a keyed join must leave NO unsealed author parked in RAM. The

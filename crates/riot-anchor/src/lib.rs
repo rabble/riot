@@ -39,5 +39,7 @@ pub mod listing;
 pub mod removal;
 pub mod repository;
 pub mod schema;
+#[cfg(feature = "daemon")]
+pub mod sync_driver;
 pub mod sync_service;
 pub mod work;

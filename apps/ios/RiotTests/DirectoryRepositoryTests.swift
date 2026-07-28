@@ -22,6 +22,20 @@ final class DirectoryRepositoryTests: XCTestCase {
         return [(manifest: manifest, bundle: bundle)]
     }
 
+    private static func allStarterPacks(
+        file: StaticString = #filePath
+    ) throws -> [(manifest: Data, bundle: Data)] {
+        let apps = URL(fileURLWithPath: "\(file)")
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures/apps")
+        return try RiotAppModel.loadStarterPacks { name in
+            try? Data(contentsOf: apps.appendingPathComponent("\(name).cbor"))
+        }
+    }
+
     private func openRepository() throws -> RiotProfileRepository {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("directory-\(UUID().uuidString)", isDirectory: true)
@@ -45,7 +59,8 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
         let row = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
         XCTAssertFalse(row.description.isEmpty)
-        XCTAssertTrue(row.badges.contains("Built in"))
+        XCTAssertFalse(row.badges.contains("Built in"))
+        XCTAssertTrue(row.badges.contains("Works offline"))
         // Its bytes ship with the app, so it is never "still arriving".
         XCTAssertFalse(row.badges.contains("Still arriving from your group"))
         // Held on this device, but no organizer has turned it on: Review.
@@ -88,12 +103,67 @@ final class DirectoryRepositoryTests: XCTestCase {
         model.refresh()
 
         let after = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
-        XCTAssertTrue(after.badges.contains("On in this space"))
+        XCTAssertFalse(after.badges.contains("On in this space"))
         XCTAssertTrue(after.canRecommend)
         guard case let .open(app) = after.availability else {
             return XCTFail("expected a trusted, held app to be openable, got \(after.availability)")
         }
         XCTAssertEqual(app.appIDHex, after.appIDHex)
+    }
+
+    func testTrustedToolRemainsInCommunityAfterDurableReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("directory-reopen-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let databasePath = directory.appendingPathComponent("riot.db").path
+        let keyStore = TestWrappingKeyStore()
+        let packs = try Self.allStarterPacks()
+        let namespaceID: String
+        let appID: String
+
+        do {
+            let first = try RiotProfileRepository.open(
+                storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+                keyStore: keyStore,
+                starterPacks: packs,
+                databasePath: databasePath
+            )
+            let space = try first.createPublicSpace(title: "River City Wire")
+            namespaceID = space.namespaceID
+            appID = try XCTUnwrap(first.spaceApps().first).appIDHex
+            try first.trustApp(appID: appID, expectedNamespaceID: namespaceID)
+        }
+
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs,
+            databasePath: databasePath
+        )
+        let runtimeApp = try XCTUnwrap(
+            reopened.spaceApps().first { $0.appIDHex.caseInsensitiveCompare(appID) == .orderedSame }
+        )
+        let listing = try XCTUnwrap(
+            reopened.directoryListings().first {
+                RiotDirectoryRow.hex($0.appId).caseInsensitiveCompare(appID) == .orderedSame
+            }
+        )
+        let model = RiotDirectoryModel(port: reopened)
+        model.refresh(approval: .organizer)
+
+        XCTAssertTrue(runtimeApp.trusted, "the runtime authorization survived the reopen")
+        XCTAssertTrue(
+            listing.trustedInSpaces.contains {
+                RiotDirectoryRow.hex($0).caseInsensitiveCompare(namespaceID) == .orderedSame
+            },
+            "the directory projection must report the same current-community authorization"
+        )
+        XCTAssertEqual(model.snapshot?.inCommunity.map(\.appIDHex), [appID.lowercased()])
+        XCTAssertFalse(
+            model.snapshot?.availableToAdd.contains {
+                $0.appIDHex.caseInsensitiveCompare(appID) == .orderedSame
+            } == true
+        )
     }
 
     /// Recommending and passing an app on both reach Rust and come back with a
@@ -108,13 +178,119 @@ final class DirectoryRepositoryTests: XCTestCase {
         model.refresh()
 
         let onNow = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
-        model.recommend(onNow, note: "We used it all weekend")
+        let context = try XCTUnwrap(onNow.actionContext)
+        model.recommend(onNow, note: "We used it all weekend", context: context)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.confirmation, "Recommended Checklist")
+        XCTAssertEqual(model.confirmation, "Recommended Checklist to Berlin Mutual Aid")
 
-        model.share(onNow)
+        model.makeAvailable(onNow, context: context)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.confirmation, "Shared Checklist to Berlin Mutual Aid")
+        XCTAssertEqual(model.confirmation, "Made Checklist available in Berlin Mutual Aid")
+    }
+
+    func testRepositoryRejectsStaleExpectedNamespaceForEveryDirectoryMutation() throws {
+        let repository = try openRepository()
+        let space = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let listing = try XCTUnwrap(
+            repository.directoryListings().first { $0.name == "Checklist" }
+        )
+        let stale = space.namespaceID + "ff"
+
+        XCTAssertThrowsError(
+            try repository.getCarriedApp(appID: listing.appId, expectedNamespaceID: stale)
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+        XCTAssertThrowsError(
+            try repository.endorseApp(
+                appID: listing.appId,
+                note: "Useful",
+                retract: false,
+                expectedNamespaceID: stale
+            )
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+        XCTAssertThrowsError(
+            try repository.shareApp(appID: listing.appId, expectedNamespaceID: stale)
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+
+        XCTAssertFalse(repository.endorsedAppIDs.contains(RiotDirectoryRow.hex(listing.appId)))
+    }
+
+    func testEnabledUnadmittedOpenAdmitsAndRemainsTrusted() throws {
+        let (repository, listing) = try repositoryCarryingChecklist()
+        let namespace = try XCTUnwrap(repository.currentSpace?.namespaceID)
+        try repository.trustApp(
+            appID: RiotDirectoryRow.hex(listing.appId),
+            expectedNamespaceID: namespace
+        )
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(model.snapshot?.inCommunity.first)
+
+        let app = try model.prepareOpen(row, context: XCTUnwrap(row.actionContext))
+
+        XCTAssertTrue(app.trusted)
+        XCTAssertTrue(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNotNil(repository.appDataBridge(appID: app.appIDHex))
+    }
+
+    func testDisabledUnadmittedAddAdmitsWithoutTrustingOrOpeningABridge() throws {
+        let (repository, _) = try repositoryCarryingChecklist()
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(model.snapshot?.availableToAdd.first)
+
+        let app = try model.prepareAdd(row, context: XCTUnwrap(row.actionContext))
+
+        XCTAssertFalse(app.trusted)
+        XCTAssertFalse(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNil(repository.appDataBridge(appID: app.appIDHex))
+    }
+
+    func testMemberCannotUsePrepareAddToBridgeAnUnadmittedTool() throws {
+        let host = try openRepository()
+        let space = try host.createPublicSpace(title: "Berlin Mutual Aid")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("member-add-\(UUID().uuidString)", isDirectory: true)
+        let member = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(
+                fileURL: directory.appendingPathComponent("profile.json")
+            ),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        try member.joinSpace(space)
+        let listing = try XCTUnwrap(
+            member.directoryListings().first { $0.name == "Checklist" }
+        )
+        try member.shareApp(
+            appID: listing.appId,
+            expectedNamespaceID: space.namespaceID
+        )
+        let model = RiotDirectoryModel(port: member)
+        model.refresh(approval: .member)
+        let row = try XCTUnwrap(model.snapshot?.availableToAdd.first)
+
+        XCTAssertThrowsError(
+            try model.prepareAdd(row, context: XCTUnwrap(row.actionContext))
+        )
+        XCTAssertTrue(try member.installedApps().isEmpty)
+        XCTAssertNil(member.appDataBridge(appID: row.appIDHex))
+    }
+
+    func testMakeAvailablePublishesButDoesNotEnableTheTool() throws {
+        let repository = try openRepository()
+        let space = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(
+            model.snapshot?.availableToAdd.first { $0.name == "Checklist" }
+        )
+        let context = try XCTUnwrap(row.actionContext)
+
+        model.makeAvailable(row, context: context)
+
+        XCTAssertEqual(model.confirmation, "Made Checklist available in \(space.title)")
+        XCTAssertFalse(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNil(repository.appDataBridge(appID: row.appIDHex))
     }
 
     // MARK: - Getting an app this profile carries but has not taken up
@@ -264,7 +440,31 @@ final class DirectoryRepositoryTests: XCTestCase {
 
         XCTAssertTrue(model.canApproveApps, "the space's creator is its organizer")
         XCTAssertFalse(model.isLegacyProfile)
-        XCTAssertNil(AppReviewSheet.unavailableReason(canApprove: true, isLegacyProfile: false))
+        let sheet = AppReviewSheetPresentation(
+            permissions: [],
+            context: RiotDirectoryActionContext(
+                appID: Data([0x01]),
+                appIDHex: "01",
+                appName: "Checklist",
+                namespaceID: "berlin-mutual-aid",
+                communityTitle: "Berlin Mutual Aid",
+                selectionGeneration: 1
+            ),
+            capability: .organizer,
+            submissionState: .idle
+        )
+        XCTAssertEqual(
+            sheet.elements,
+            [
+                .permissions([]),
+                .approval(
+                    title: "Add to Berlin Mutual Aid",
+                    isEnabled: true,
+                    accessibilityHint: nil
+                ),
+            ],
+            "an organizer gets the named approval action"
+        )
 
         let app = try XCTUnwrap(model.apps.first)
         XCTAssertFalse(app.trusted)
@@ -357,18 +557,49 @@ final class DirectoryRepositoryTests: XCTestCase {
     /// shows instead has to be true for the person reading it. A member is told to
     /// ask the organizer; only a pre-organizer profile is told to start a new one.
     func testTheApproveButtonIsReplacedByAnHonestSentenceWhenItCannotSucceed() {
-        let member = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: false)
-        XCTAssertEqual(member, "Only the organizer of this community can turn a tool on here.")
-
-        let legacy = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: true)
-        XCTAssertEqual(
-            legacy,
-            "This profile was made before communities had organizers, so it can’t "
-                + "approve tools for this community. Start a new profile to organize one."
+        let context = RiotDirectoryActionContext(
+            appID: Data([0x01]),
+            appIDHex: "01",
+            appName: "Chat",
+            namespaceID: "river-city-wire",
+            communityTitle: "River City Wire",
+            selectionGeneration: 1
         )
-        XCTAssertNotEqual(member, legacy, "the two cases need opposite advice")
+        let member = AppReviewSheetPresentation(
+            permissions: [],
+            context: context,
+            capability: .member,
+            submissionState: .idle
+        )
+        XCTAssertEqual(
+            member.elements,
+            [
+                .permissions([]),
+                .unavailable("Only an organizer of River City Wire can add this tool."),
+            ]
+        )
+        XCTAssertFalse(member.elements.contains(where: \.isApproval))
 
-        for message in [member, legacy].compactMap({ $0 }) {
+        let legacy = AppReviewSheetPresentation(
+            permissions: [],
+            context: context,
+            capability: .unavailable,
+            submissionState: .idle
+        )
+        XCTAssertEqual(
+            legacy.elements,
+            [
+                .permissions([]),
+                .unavailable(
+                    "This profile can’t add tools to River City Wire. "
+                        + "Start a new profile to organize a community."
+                ),
+            ]
+        )
+        XCTAssertFalse(legacy.elements.contains(where: \.isApproval))
+        XCTAssertNotEqual(member.elements, legacy.elements, "the two cases need opposite advice")
+
+        for message in [member.copy.memberReason, legacy.copy.legacyReason] {
             XCTAssertFalse(message.contains("InvalidInput"), "no error codes")
             XCTAssertFalse(message.lowercased().contains("namespace"), "no jargon")
             XCTAssertFalse(message.lowercased().contains("subspace"), "no jargon")
@@ -380,12 +611,12 @@ final class DirectoryRepositoryTests: XCTestCase {
     func testApprovalFailuresAreTranslatedOutOfErrorCodes() {
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.LegacyProfileCannotOrganize),
-            "This profile was made before communities had organizers, so it can’t "
-                + "approve tools for this community. Start a new profile to organize one."
+            "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
         )
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.NotSpaceOrganizer),
-            "Only the organizer of this community can turn a tool on here."
+            "Only the organizer of this space can turn an app on here."
         )
     }
 

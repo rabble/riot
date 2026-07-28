@@ -225,6 +225,25 @@ public enum HomeShortcuts {
     }
 }
 
+// MARK: - Home's own title
+
+/// What Home calls itself. The persistent community header sits directly above
+/// every route and already carries the community's name with the chooser
+/// chevron, so Home names the PLACE within the community rather than the
+/// community again — printing the name twice spends the screen's best row saying
+/// what the row above it just said. The title is deliberately a function of the
+/// community that ignores it: reverting to the community's own name has to
+/// change this declaration, and the test that pins it fails.
+public enum HomeHeaderTitle {
+    public static let eyebrow = "Community"
+    public static let placeTitle = "What's happening"
+
+    public static func title(forCommunityNamed communityName: String) -> String {
+        _ = communityName
+        return placeTitle
+    }
+}
+
 // MARK: - Profile / community settings relocation
 
 /// The two distinct, labeled identity paths the header exposes (nav design: the
@@ -285,6 +304,40 @@ public enum ShellEscapeAction: Equatable, Sendable {
     public static func action(isToolOpen: Bool, hasUnsavedWork: Bool) -> ShellEscapeAction {
         guard isToolOpen else { return .ignore }
         return hasUnsavedWork ? .confirmDiscard : .returnFromTool
+    }
+}
+
+/// Mounted tools are pushed inside the iPhone Tools stack, but replace the
+/// selected split-detail route on macOS. Only the latter must be torn down when
+/// a sidebar/keyboard route changes.
+public enum ToolRoutePolicy {
+    public static var closesMountedToolBeforeRoute: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+}
+
+/// Identity and synchronous teardown for one SwiftUI-hosted app runtime. Every
+/// replacement gets a new UUID so a torn-down representable cannot be reused,
+/// even when the same app is reopened immediately.
+@MainActor
+public struct AppRuntimeMountState {
+    public private(set) var teardownHandle = AppRuntimeTeardownHandle()
+    public private(set) var id = UUID()
+
+    public init() {}
+
+    public mutating func replace() {
+        teardownHandle.tearDownNow()
+        teardownHandle = AppRuntimeTeardownHandle()
+        id = UUID()
+    }
+
+    public func tearDownNow() {
+        teardownHandle.tearDownNow()
     }
 }
 

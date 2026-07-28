@@ -67,6 +67,23 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertEqual(ShellEscapeAction.action(isToolOpen: true, hasUnsavedWork: true), .confirmDiscard)
     }
 
+    // MARK: - Home hierarchy inside an active community
+
+    func testHomeNamesThePlaceAndNeverReprintsTheCommunityName() {
+        // The persistent community header already carries the community name with
+        // the chooser chevron. Home is INSIDE that header, so repeating the name
+        // spends the screen's best row saying what the row above it just said.
+        for name in ["River City Wire", "Home", "", "Riot"] {
+            XCTAssertNotEqual(
+                HomeHeaderTitle.title(forCommunityNamed: name),
+                name,
+                "Home names the place within the community, not the community"
+            )
+        }
+        XCTAssertEqual(HomeHeaderTitle.title(forCommunityNamed: "River City Wire"), "What's happening")
+        XCTAssertEqual(HomeHeaderTitle.eyebrow, "Community")
+    }
+
     @MainActor
     func testEveryRouteCanBecomeTheVisibleDestination() {
         let model = RiotAppModel()
