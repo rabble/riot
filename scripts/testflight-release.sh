@@ -109,7 +109,7 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
   -allowProvisioningUpdates \
-  "${ASC_AUTH_ARGS[@]}" \
+  ${ASC_AUTH_ARGS[@]+"${ASC_AUTH_ARGS[@]}"} \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
 echo "==> export signed .ipa"
@@ -118,7 +118,7 @@ xcodebuild -exportArchive \
   -exportOptionsPlist "$EXPORT_OPTS" \
   -exportPath "$OUT" \
   -allowProvisioningUpdates \
-  "${ASC_AUTH_ARGS[@]}"
+  ${ASC_AUTH_ARGS[@]+"${ASC_AUTH_ARGS[@]}"}
 
 IPA="$(ls "$OUT"/*.ipa 2>/dev/null | head -1 || true)"
 if [ -z "$IPA" ]; then echo "ERROR: no .ipa produced in $OUT" >&2; exit 1; fi
