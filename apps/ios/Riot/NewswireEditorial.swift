@@ -69,6 +69,20 @@ public enum ReactionKind: String, CaseIterable, Equatable, Hashable, Sendable, I
         case .grief: "Grief"
         }
     }
+
+    /// The emoji the toggle draws instead of the word. PRESENTATION ONLY — the
+    /// wire vocabulary stays the closed integer-tagged set core admits, so this
+    /// mapping can change without touching a payload, a tally, or sync. Free-form
+    /// emoji stay out of the record (see `NewsReactionV1`); these four are a
+    /// rendering of the four kinds, not a widening of them.
+    public var glyph: String {
+        switch self {
+        case .support: "🤝"
+        case .solidarity: "✊"
+        case .important: "❗️"
+        case .grief: "🕯️"
+        }
+    }
 }
 
 // MARK: - Closed editorial field table
