@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-27T00:00:00.000Z",
+  "fileHashes": {
+    "apps/ios/Riot.xcodeproj/project.pbxproj": "cc5a64bcd4d477e05930db2ca0ffdf7a58d1b7a5100e787e9d1efd9cfa3c3417",
+    "apps/macos/Riot.xcodeproj/project.pbxproj": "13be7e57440303f540a8127363b2afb360d0fe159692adf647bca67f571cdb94",
+    "apps/android/app/build.gradle.kts": "dccb13cd0fc3a8f37f8271bfbbc2f46b2f48485ab0dda2f0af620800ece6fbb4",
+    "apps/android/app/src/main/AndroidManifest.xml": "244ce4a0253a515d0ba592b58439915a7477755db116e152fd591ffea3885b14",
+    "apps/ios/Riot/Info.plist": "0a3f29c640619e06d89a45ff2bc2e64d9c0039adf2f2e90325a770aa90a19012",
+    "apps/macos/Riot/Info.plist": "50d7f1f08bfb1a9b3f870dcd1df43db6cbcd30c193f9d15c2d74c33afc4ed054"
+  },
+  "ios": {
+    "bundleId": "net.protest.riot",
+    "marketingVersion": "0.1",
+    "buildInjection": "commit-count",
+    "icon": "present",
+    "privacyManifest": false
+  },
+  "macos": {
+    "bundleId": "net.protest.riot",
+    "marketingVersion": "0.1.0",
+    "buildInjection": "commit-count",
+    "icon": "missing",
+    "privacyManifest": false,
+    "signing": "missing",
+    "architecture": "apple-silicon"
+  },
+  "android": {
+    "applicationId": "org.riot.evidence",
+    "namespace": "org.riot.evidence",
+    "versionName": "0.1",
+    "versionCode": 1,
+    "icons": "missing",
+    "signing": "missing"
+  }
+}

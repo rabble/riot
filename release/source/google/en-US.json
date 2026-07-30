@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "locale": "en-US",
+  "fields": {
+    "title": "Riot",
+    "shortDescription": "Community-owned news and practical tools that stay useful locally.",
+    "fullDescription": "Community-owned news and practical tools designed to stay useful locally when networks are unreliable. Version 1.0 is an early-access release.\n\n- Follow community newswires.\n- Publish signed updates.\n- Read signatures and community editorial labels.\n- Carry community tools, including shared checklists.\n- Exchange updates nearby with other phones. Nearby exchange is experimental.\n- Keep a local copy available offline.\n\nA valid signature proves source and integrity, not truth. Editorial labels are community signals, not independent factual verification.\n\nRiot is free, with no in-app purchases. Riot is available worldwide.\nPrivacy: https://riot.protest.net/privacy/\nSupport: https://riot.protest.net/support/\nReleases: https://riot.protest.net/releases/",
+    "releaseNotes": "Version 1.0 is an early-access release. First public release: newswires, signed updates, editorial labels, tools, experimental nearby exchange, offline reading."
+  },
+  "urls": {
+    "privacy": "https://riot.protest.net/privacy/",
+    "support": "https://riot.protest.net/support/",
+    "marketing": "https://riot.protest.net/releases/"
+  },
+  "categories": {
+    "category": "NEWS_AND_MAGAZINES"
+  }
+}

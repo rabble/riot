@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/visuals.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "templateVersion", "locale", "appearance", "fonts", "colors", "band", "headline", "thumbnail", "frames", "devices"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "templateVersion": { "const": 1 },
+    "locale": { "const": "en-US" },
+    "appearance": { "const": "light" },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "headline", "label", "body"],
+      "properties": {
+        "directory": { "const": "apps/ios/Riot/Resources/Fonts" },
+        "headline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["family", "file"],
+          "properties": {
+            "family": { "const": "Anton" },
+            "file": { "const": "Anton-Regular.ttf" }
+          }
+        },
+        "label": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["family", "file"],
+          "properties": {
+            "family": { "const": "Space Mono" },
+            "file": { "const": "SpaceMono-Bold.ttf" }
+          }
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["family", "file", "weight"],
+          "properties": {
+            "family": { "const": "Work Sans" },
+            "file": { "const": "WorkSans-Variable.ttf" },
+            "weight": { "const": 400 }
+          }
+        }
+      }
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ink", "paper"],
+      "properties": {
+        "ink": { "const": "#17160f" },
+        "paper": { "const": "#eae6da" }
+      }
+    },
+    "band": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxFractionPortrait", "maxFractionLandscape", "safeInsetFraction"],
+      "properties": {
+        "maxFractionPortrait": { "const": 0.24 },
+        "maxFractionLandscape": { "const": 0.28 },
+        "safeInsetFraction": { "const": 0.05 }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxLines", "maxCodePoints", "minContrast", "minCapHeightPhonePx", "minCapHeightLargePx"],
+      "properties": {
+        "maxLines": { "const": 3 },
+        "maxCodePoints": { "const": 42 },
+        "minContrast": { "const": 4.5 },
+        "minCapHeightPhonePx": { "const": 56 },
+        "minCapHeightLargePx": { "const": 72 }
+      }
+    },
+    "thumbnail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["widthPx", "minCapHeightPx"],
+      "properties": {
+        "widthPx": { "const": 320 },
+        "minCapHeightPx": { "const": 14 }
+      }
+    },
+    "frames": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stateId", "claimId", "headline", "supportingCopy"],
+        "properties": {
+          "stateId": {
+            "enum": ["community-newswire", "signed-publishing", "labels-and-signatures", "community-tools", "nearby-exchange", "offline-copy"]
+          },
+          "claimId": {
+            "enum": ["follow-newswire", "publish-signed", "read-signatures-labels", "community-tools", "nearby-exchange", "offline-copy"]
+          },
+          "headline": { "type": "string", "minLength": 1 },
+          "supportingCopy": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "width", "height", "orientation", "nearbyVariant"],
+        "properties": {
+          "id": {
+            "enum": ["iphone", "ipad", "mac", "android-phone", "android-tablet"]
+          },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "orientation": { "enum": ["portrait", "landscape"] },
+          "nearbyVariant": {
+            "type": "boolean",
+            "description": "true when frame 5 may use the nearby variant on this device"
+          }
+        }
+      }
+    }
+  }
+}

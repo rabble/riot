@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "gates": [
+    { "name": "agreements", "state": "human-action", "reason": "Confirm current Apple and Google developer agreements.", "evidence": [] },
+    { "name": "tax", "state": "human-action", "reason": "Confirm required tax declarations in both stores.", "evidence": [] },
+    { "name": "banking", "state": "human-action", "reason": "Confirm whether either free-app account still requires banking setup.", "evidence": [] },
+    { "name": "trader-status", "state": "human-action", "reason": "Confirm store trader-status declarations.", "evidence": [] },
+    { "name": "signing", "state": "human-action", "reason": "Signing identities are external and are validated in later work units.", "evidence": [] },
+    { "name": "hardware", "state": "human-action", "reason": "Physical-device rehearsals occur after exact store builds exist.", "evidence": [] },
+    { "name": "console", "state": "human-action", "reason": "Authenticated Console actions are performed manually.", "evidence": [] }
+  ]
+}

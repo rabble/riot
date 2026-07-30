@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Riot support and reporting: how to reach the operator, what response to expect on the public channel, and which in-app controls are not shipped yet.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Riot support — contact, reporting, and response commitments</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3.2rem, 7.5vw, 6rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.2rem, 4.6vw, 3.6rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.5rem, 2.4vw, 2rem); }
+    p { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--blue); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    .hero .lede { color: var(--paper); }
+    .hero .lede a { color: var(--paper); }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .green { background: var(--green); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    .green .eyebrow, .yellow .eyebrow { color: var(--ink); }
+    .grid { display: grid; gap: 18px; }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .card .label { display: block; margin-bottom: 10px; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .dark .card .label { color: #b8b3a8; }
+    .dark .card a { color: var(--pink); }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { position: relative; padding-left: 34px; margin-bottom: 12px; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; top: -2px; font-weight: 900; color: var(--pink); font-size: 1.2rem; }
+    .checklist.cross li::before { content: "✕"; color: var(--ink); }
+    .dark .checklist.cross li::before { color: var(--pink); }
+    .pull { padding: 26px 28px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.1rem; font-weight: 700; }
+    .source-note { margin-top: 24px; font-size: .92rem; color: var(--muted); }
+    .dark .source-note { color: #b8b3a8; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.5rem, 13vw, 4.2rem); }
+      .cards-2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/why-riot/">Why Riot</a>
+        <a href="/guide/">Using Riot</a>
+        <a href="/about/">About</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/releases/">Get the app</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">Support · contact and reporting</p>
+        <h1>Reach a human. Get a straight answer.</h1>
+        <p class="lede">This page is the public support and reporting channel for Riot. It names the responsible operator, states what response to expect on this channel, and is explicit about which in-app controls are not shipped yet.</p>
+      </div>
+    </header>
+
+    <section class="green" id="contact">
+      <div class="wrap">
+        <p class="eyebrow">Contact the operator</p>
+        <h2>One named operator. One public channel.</h2>
+        <p class="section-intro">Riot is a protest.net project. The responsible operator for support, reports, and escalation is reachable directly; there is no ticket queue and no outsourced triage.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Support and general questions</span>
+            <p>Email <a href="mailto:rabble@protest.net">rabble@protest.net</a> for help with the app, the site, or your community's data.</p>
+            <p>Include your platform (iPhone, iPad, Mac, Android phone, or Android tablet) and what you were trying to do.</p>
+          </article>
+          <article class="card">
+            <span class="label">Reports and escalation</span>
+            <p>Report objectionable content, abuse, or safety concerns to <a href="mailto:rabble@protest.net">rabble@protest.net</a> with the subject prefix <b>REPORT:</b>.</p>
+            <p>If you believe someone is in immediate danger, contact local emergency services first, then email with the subject prefix <b>URGENT:</b>.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="dark" id="response">
+      <div class="wrap">
+        <p class="eyebrow">Response commitments — public channel</p>
+        <h2>What response to expect, and when.</h2>
+        <p class="section-intro">These commitments apply to reports sent to the public email channel above. They are the same targets recorded in Riot's release policy source, and they bind the operator, not the software.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Acknowledgement</span>
+            <ul class="checklist">
+              <li>Every report to the public channel is acknowledged within 24 hours.</li>
+              <li>Reports about imminent harm or illegal content receive a decision within 24 hours.</li>
+              <li>Other objectionable-content reports receive a decision within 72 hours.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">What a decision means</span>
+            <ul class="checklist">
+              <li>A human reviews the report; nothing is auto-actioned.</li>
+              <li>You receive the outcome and the reason on the same channel.</li>
+              <li>If the report needs information only you have, the clock pauses while we ask, and we say so.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="yellow" id="not-shipped">
+      <div class="wrap">
+        <p class="eyebrow">Early-access honesty</p>
+        <h2>In-app controls that are not shipped yet.</h2>
+        <p class="section-intro">Version 1.0 is an early-access release. The public channel above works today; the in-app controls below are designed and recorded as release gates, but they are not in the build you can install. This page will change when they ship.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Not in the app yet</span>
+            <ul class="checklist cross">
+              <li>In-app content reporting and author reporting flows.</li>
+              <li>In-app objectionable-content filtering and local author blocking.</li>
+              <li>Published prohibited-content rules tied to the app.</li>
+              <li>Moderator response workflows linked to protocol tombstones.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">What to do until they ship</span>
+            <ul class="checklist">
+              <li>Use the email channel above for anything you would report in-app.</li>
+              <li>Leave a community whose content you do not want; your data stays on your devices.</li>
+              <li>Read the <a href="/privacy/">privacy page</a> for the current data posture before joining public spaces.</li>
+            </ul>
+          </article>
+        </div>
+        <p class="pull">Version 1.0 is an early-access release. Riot is free, with no in-app purchases. See the <a href="/releases/">releases page</a> for what is in this build and the <a href="/accessibility/">accessibility page</a> for our rehearsal commitments.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a> · <a href="/support/">Support</a> · <a href="/accessibility/">Accessibility</a></p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -19,10 +19,6 @@ zeroize = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Apple unified-logging bridge. Native Apple targets only so Linux CI compiles.
-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-tracing-oslog = { workspace = true }
-
 # --- Non-local transport (Slice 1, gated behind the OFF-by-default `net`
 # feature) — mirrors riot-anchor's `daemon` gate (riot-anchor/Cargo.toml:59).
 # These are the ONLY iroh/tokio edges in this crate. `riot-ffi` is a
@@ -37,6 +33,10 @@ riot-transport = { path = "../riot-transport", optional = true }
 riot-anchor-protocol = { path = "../riot-anchor-protocol", optional = true }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "signal"], optional = true }
 iroh = { version = "1.0.2", optional = true }
+
+# Apple unified-logging bridge. Native Apple targets only so Linux CI compiles.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+tracing-oslog = { workspace = true }
 
 [features]
 default = []

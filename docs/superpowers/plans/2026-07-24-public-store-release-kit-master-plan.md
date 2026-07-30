@@ -1,5 +1,32 @@
 # Riot Public Store Release Kit Implementation Plan
 
+> **Status (2026-07-27):** WU-000 and WU-001 complete, reviewed, and committed
+> on branch `codex/riot-public-store-release-kit`. WU-002 is next and
+> unblocked. WU-003 through WU-010 remain. Known environment issue tracked as
+> rabble/riot#151 (Android `lintVitalReportRelease` AGP path-variable
+> serialization failure; pre-existing, must be resolved before WU-006).
+> Current `release:status`: truthfully `BLOCKED` — policy-control and
+> `url.support` gates close in WU-002 and later; account/legal/Console items
+> stay `HUMAN ACTION` by design.
+>
+> **Forward path:**
+> 1. **WU-002 (next):** draft detailed plan (metadata generators + support/
+>    accessibility pages first, visual/icons subtask second), pass the
+>    three-reviewer plan gate, execute. Closes the `url.support` gate.
+> 2. **WU-003** depends only on WU-000 — its detailed plan may be drafted and
+>    gated in parallel with WU-002 execution, but commits land sequentially to
+>    keep `scripts/release/cli.mjs` diffs reviewable.
+> 3. **WU-004** after WU-003; resolve rabble/riot#151 before or during WU-004
+>    (Gradle lockfile/verification work touches the same Android build).
+> 4. **WU-005/WU-006** native candidates; WU-001 fixture already pinned in all
+>    loaders, capture modes build on it.
+> 5. **WU-007–WU-009** require signed candidates plus authenticated human
+>    Console/device evidence — schedule operator time before starting.
+> 6. **WU-010** composite gate last; runs the final verification matrix.
+> 7. Product policy remediation (the 12 `policy.*` BLOCKED gates) is a
+>    separate brainstormed/design-reviewed workstream per the WU-000 stop
+>    gate, not part of this kit's file scope.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a repeatable, fail-closed release kit for Riot 1.0 public early
@@ -166,34 +193,34 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] Write RED tests for canonical key ordering, unknown/missing fields,
+- [x] Write RED tests for canonical key ordering, unknown/missing fields,
   malformed records, full-digest references, contradictory privacy claims,
   unresolved export classification, missing UGC controls, unsupported store
   claims, incomplete per-device accessibility evidence, missing tool
   version/checksum pins, and every required worksheet.
-- [ ] Run
+- [x] Run
   `node --test scripts/release/test/canonical-json.test.mjs scripts/release/test/schema.test.mjs scripts/release/test/records.test.mjs scripts/release/test/policy.test.mjs scripts/release/test/cli.test.mjs`
   and verify failures are caused by missing release modules.
-- [ ] Implement pure modules with injected filesystem, clock, and hash
+- [x] Implement pure modules with injected filesystem, clock, and hash
   dependencies; reject unknown schema properties and truncated identifiers.
-- [ ] Populate evidence-backed source records and explicit Markdown worksheets
+- [x] Populate evidence-backed source records and explicit Markdown worksheets
   for Apple App Privacy, Google Data Safety, permission justifications,
   required-reason APIs/privacy manifests, content ratings, review
   instructions, the outbound-network matrix, UGC controls and 24/72-hour
   operations, account/trader/tax/banking agreements, export compliance, and
   device-specific accessibility answers. Record legal/account fields as
   `HUMAN ACTION`; never invent an answer.
-- [ ] Create a tested CLI/package-script skeleton supporting `status`,
+- [x] Create a tested CLI/package-script skeleton supporting `status`,
   `status --json`, and `generate`; later work units register commands through
   explicit imports without changing these diagnostics.
-- [ ] Enforce the policy stop gate: if filtering, in-app content/author
+- [x] Enforce the policy stop gate: if filtering, in-app content/author
   reporting, local blocking, moderator/tombstone handling, response ownership,
   or public contact is missing, status is `BLOCKED` and WU-003 candidate
   production cannot start. Product remediation requires a separate
   brainstormed, design-reviewed, TDD plan before its files enter scope.
-- [ ] Run `npm run test:release:coverage` and require 100 percent lines,
+- [x] Run `npm run test:release:coverage` and require 100 percent lines,
   branches, functions, and statements for `scripts/release/**/*.mjs`.
-- [ ] Commit exact WU-000 paths with
+- [x] Commit exact WU-000 paths with
   `git commit -m "feat(release): add policy and schema foundation"`.
 
 ## WU-001: Shared synthetic fixture and native fixture contracts
@@ -206,21 +233,22 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Create: `apps/macos/RiotTests/ReleaseFixtureTests.swift`
+- Modify: `apps/android/app/build.gradle.kts`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/ReleaseFixture.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/ReleaseFixtureTest.kt`
 
-- [ ] Write RED Swift and Kotlin tests that load the same fixed fixture and
+- [x] Write RED Swift and Kotlin tests that load the same fixed fixture and
   assert its schema version, fixed clock, full identifiers, six narrative
   states, no private/person/location/notification data, and byte-identical
   canonical fixture digest.
-- [ ] Run the focused Apple and Android loader tests after
+- [x] Run the focused Apple and Android loader tests after
   `sh scripts/conference/build-native-core.sh`; verify failure is caused by the
   missing fixture/loaders.
-- [ ] Implement minimal native read-only fixture decoders. Production launch
+- [x] Implement minimal native read-only fixture decoders. Production launch
   cannot select the fixture; capture-only entry points arrive in WU-005/WU-006.
-- [ ] Run the focused tests again and require the same digest on iOS, macOS,
+- [x] Run the focused tests again and require the same digest on iOS, macOS,
   and Android.
-- [ ] Commit exact WU-001 paths with
+- [x] Commit exact WU-001 paths with
   `git commit -m "test(release): add shared synthetic fixture contract"`.
 
 ## WU-002: Metadata, configuration, and visual validators/generators
@@ -229,18 +257,21 @@ invented first-release `approved-ready` or second publication action.
 
 - Create: `release/source/apple/en-US.json`
 - Create: `release/source/google/en-US.json`
+- Create: `release/schemas/{apple-metadata,google-metadata}.schema.json`
 - Create: `scripts/release/metadata.mjs`
 - Create: `scripts/release/test/metadata.test.mjs`
-- Generate: `release/generated/apple/en-US/*.txt`
-- Generate: `release/generated/google/en-US/*.txt`
+- Generate: `release/generated/apple/en-US/*`
+- Generate: `release/generated/google/en-US/*`
+- Modify: `release/source/product.json` (support-URL evidence state only)
+- Modify: `scripts/release/test/policy.test.mjs` (support-gate assertions)
 - Create: `marketing/support/index.html`
 - Create: `marketing/accessibility/index.html`
-- Create: `marketing/public/support/index.html`
-- Create: `marketing/public/accessibility/index.html`
-- Modify: `marketing/privacy/index.html`
-- Modify: `marketing/public/privacy/index.html`
-- Modify: `marketing/releases/index.html`
-- Modify: `marketing/public/releases/index.html`
+- Modify: all `marketing/*/index.html` pages and their `marketing/public/**`
+  mirrors (footer/topnav link additions and canonical-fact alignment only)
+- Modify: `marketing/public/sitemap.xml`
+- Modify: `marketing/README.md`
+- Modify: `scripts/marketing/protocol-page-contracts.mjs`
+- Modify: `scripts/release/schema.mjs` (schema-ID registration only)
 - Modify: `scripts/release/cli.mjs`
 - Modify: `scripts/release/test/cli.test.mjs`
 
@@ -263,13 +294,16 @@ invented first-release `approved-ready` or second publication action.
 **Files:**
 
 - Create: `release/source/visuals.json`
+- Create: `release/schemas/visuals.schema.json`
 - Create: `scripts/release/configuration.mjs`
-- Create: `scripts/release/{visual-model,visual-render,visual-validate,image-inspector}.mjs`
-- Create: `scripts/release/test/{configuration,visual-model,visual-render,visual-validate}.test.mjs`
+- Create: `scripts/release/{visual-model,visual-render,visual-validate,image-inspector,render-environment}.mjs`
+- Create: `scripts/release/test/{configuration,visual-model,visual-render,visual-validate,image-inspector,render-environment}.test.mjs`
 - Create: `release/generated/visuals/draft/**`
 - Create: `release/generated/visual-draft-provenance.json`
 - Create: `release/generated/icons/{macos,android}/**`
 - Create: `release/generated/visuals/google/{play-icon-512.png,feature-graphic-1024x500.png}`
+- Modify: `package.json`
+- Modify: `package-lock.json`
 
 - [ ] Write RED tests for the complete six-frame/five-device matrix,
   platform-specific orientation, Nearby-to-Join fallback, source-candidate

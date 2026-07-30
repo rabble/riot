@@ -34,6 +34,7 @@ cd "$ROOT"
 #   error opening input file '.../build/generated/riot-ffi/riot_ffi.swift'
 # mkdir is atomic on every filesystem this runs on, so it is the lock.
 LOCK_DIR="$ROOT/build/.release-lock"
+mkdir -p "$ROOT/build"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "ERROR: another release build is already running in this checkout." >&2
   echo "       ($LOCK_DIR exists — remove it if a previous run was killed.)" >&2
@@ -72,11 +73,16 @@ if ! command -v security >/dev/null 2>&1; then
   echo "ERROR: macOS Keychain command 'security' is unavailable." >&2
   exit 1
 fi
-if ! PASSWORD="$(security find-generic-password \
+# CI runners have no macOS keychain; accept the password from the environment
+# (a GitHub Actions secret) before falling back to the keychain.
+if [ -n "${RIOT_KEYSTORE_PASSWORD:-}" ]; then
+  PASSWORD="$RIOT_KEYSTORE_PASSWORD"
+elif ! PASSWORD="$(security find-generic-password \
   -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w 2>/dev/null)" ||
   [ -z "$PASSWORD" ]; then
   echo "ERROR: Android release keystore password is absent from the macOS keychain." >&2
-  echo "       Expected service '$KEYCHAIN_SERVICE', account '$KEYCHAIN_ACCOUNT'." >&2
+  echo "       Expected service '$KEYCHAIN_SERVICE', account '$KEYCHAIN_ACCOUNT'," >&2
+  echo "       or RIOT_KEYSTORE_PASSWORD in the environment (CI)." >&2
   exit 1
 fi
 

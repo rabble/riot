@@ -16,7 +16,16 @@
 	     Automatic signing will provision an "Apple Distribution" certificate and
 	     a Mac App Store profile for net.protest.riot on first run. -->
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>installerSigningCertificate</key>
+	<string>3rd Party Mac Developer Installer</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>net.protest.riot</key>
+		<string>Riot Mac App Store (API-created)</string>
+	</dict>
 	<key>uploadSymbols</key>
 	<true/>
 	<key>destination</key>

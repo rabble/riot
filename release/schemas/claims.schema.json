@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/claims.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "claims"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "platforms", "evidenceByPlatform", "state"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "platforms": { "type": "array", "minItems": 1, "items": { "enum": ["ios", "macos", "android"] } },
+          "evidenceByPlatform": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "ios": { "$ref": "#/$defs/platformEvidence" },
+              "macos": { "$ref": "#/$defs/platformEvidence" },
+              "android": { "$ref": "#/$defs/platformEvidence" }
+            }
+          },
+          "state": { "enum": ["pass", "blocked", "human-action"] }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "platformEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codePaths", "journeyIds"],
+      "properties": {
+        "codePaths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "journeyIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "candidateJourney": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidateId", "journeyId", "result", "evidenceDigest"],
+          "properties": {
+            "candidateId": { "type": "string", "minLength": 1 },
+            "journeyId": { "type": "string", "minLength": 1 },
+            "result": { "const": "PASS" },
+            "evidenceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      }
+    }
+  }
+}

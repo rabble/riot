@@ -1,0 +1,81 @@
+name: Apple compile gate
+
+# Compiles the iOS and macOS apps on every PR. The Rust CI (ci.yml) builds no
+# Swift, so a broken Apple target reached main undetected twice (duplicate
+# ReactionKind.glyph redeclaration slipped through #147). This job is compile-
+# only — no signing, no simulators, no archive — so it stays fast and cannot
+# flake on provisioning.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain components
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Add iOS simulator Rust target
+        run: rustup target add aarch64-apple-ios-sim
+
+      - name: Generate FFI bindings (net-enabled)
+        run: RIOT_FFI_NET_BINDINGS=1 cargo run --locked --package xtask -- generate-bindings
+
+      - name: Build native core (iOS simulator slice, net-enabled)
+        run: |
+          cargo build --locked -p riot-ffi --lib --features net --target aarch64-apple-ios-sim
+          mkdir -p build/native/ios-simulator
+          install -m 0644 target/aarch64-apple-ios-sim/debug/libriot_ffi.a \
+            build/native/ios-simulator/libriot_ffi.a
+
+      - name: Compile iOS app (unsigned)
+        run: |
+          xcodebuild build \
+            -project apps/ios/Riot.xcodeproj \
+            -scheme Riot \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain components
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Generate FFI bindings (net-enabled)
+        run: RIOT_FFI_NET_BINDINGS=1 cargo run --locked --package xtask -- generate-bindings
+
+      - name: Build native core (macOS arm64 slice, net-enabled)
+        run: |
+          cargo build --locked -p riot-ffi --lib --features net --target aarch64-apple-darwin
+          mkdir -p build/native/macos
+          install -m 0644 target/aarch64-apple-darwin/debug/libriot_ffi.a \
+            build/native/macos/libriot_ffi.a
+
+      - name: Compile macOS app (unsigned, arm64 only)
+        run: |
+          xcodebuild build \
+            -project apps/macos/Riot.xcodeproj \
+            -scheme Riot-macOS \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES
