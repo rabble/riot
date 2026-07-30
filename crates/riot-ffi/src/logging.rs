@@ -46,6 +46,11 @@ impl LogLevel {
 /// The subsystem every Riot log shares. Matches `PRODUCT_BUNDLE_IDENTIFIER`
 /// and the single existing `Logger(subsystem:category:)` in
 /// `WrappingKeyStore.swift`, so Console.app filters by one predicate.
+///
+/// Apple-only: the sole reference is `OsLogger::new` in the Apple branch of
+/// `build_dispatch`. Without the gate this is dead code on Linux, and CI runs
+/// clippy with `-D warnings`.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const SUBSYSTEM: &str = "net.protest.riot";
 
 static INIT: Once = Once::new();
