@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/review-instructions.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "topics"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "instruction", "evidencePath"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "instruction": { "type": "string", "minLength": 1 },
+          "evidencePath": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

@@ -1,56 +1,86 @@
-// Content-addressed durable records. A record's digest is the SHA-256 of its
-// canonical body, timestamps are injected (never read from the ambient clock) so
-// runs are reproducible, and references between records must carry the full
-// untruncated lowercase-hex digest — a truncated or re-cased reference is a
-// forge attempt and fails closed.
-import { createHash } from 'node:crypto';
+import { canonicalJson } from "./canonical-json.mjs";
+import { isExactUtcTimestamp, validateSource } from "./schema.mjs";
 
-import { canonicalize } from './canonical-json.mjs';
+const RECORD_FIELDS = ["createdAt", "digest", "payload", "schema", "schemaVersion"];
+const FIXED_SCHEMAS = new Map([
+  ["riot.release.accessibility.v1", "accessibility"],
+  ["riot.release.account-gates.v1", "account-gates"],
+  ["riot.release.claims.v1", "claims"],
+  ["riot.release.export-compliance.v1", "export-compliance"],
+  ["riot.release.network-matrix.v1", "network-matrix"],
+  ["riot.release.policy.v1", "policy"],
+  ["riot.release.privacy.v1", "privacy"],
+  ["riot.release.product.v1", "product"],
+  ["riot.release.review-instructions.v1", "review-instructions"],
+  ["riot.release.toolchains.v1", "toolchains"],
+]);
+const SHA256 = /^[0-9a-f]{64}$/;
 
-const FULL_DIGEST = /^[0-9a-f]{64}$/;
-// RFC 3339 UTC: a `Z`-terminated instant with no numeric offset.
-const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-
-/** SHA-256 hex digest of a value's canonical JSON form. */
-export function contentDigest(value) {
-  return createHash('sha256').update(canonicalize(value)).digest('hex');
+function assertRegistry(registry) {
+  if (typeof registry?.ajv?.getSchema !== "function") {
+    throw new TypeError("validated schema registry dependency is required");
+  }
 }
 
-/**
- * Assert a reference is a full 64-char lowercase-hex digest, returning it on
- * success. Truncated, upper-cased, or non-hex references fail closed.
- */
-export function assertFullDigest(reference) {
-  if (typeof reference !== 'string' || !FULL_DIGEST.test(reference)) {
-    throw new Error(`reference is not a full 64-char lowercase-hex digest: ${reference}`);
-  }
-  return reference;
+function assertDependencies(clock, sha256, registry) {
+  if (typeof clock !== "function") throw new TypeError("clock dependency is required");
+  if (typeof sha256 !== "function") throw new TypeError("sha256 dependency is required");
+  assertRegistry(registry);
 }
 
-function assertRfc3339Utc(timestamp) {
-  // A single fail-closed check: only a Z-terminated RFC 3339 instant is a valid
-  // UTC timestamp, so a space-separated form or a numeric offset is rejected.
-  if (typeof timestamp !== 'string' || !RFC3339_UTC.test(timestamp)) {
-    throw new Error(`timestamp is not an RFC 3339 UTC instant: ${timestamp}`);
-  }
-  return timestamp;
+function assertSchema(schema) {
+  const name = FIXED_SCHEMAS.get(schema);
+  if (!name) throw new TypeError(`unknown fixed schema identifier: ${schema}`);
+  return name;
 }
 
-/**
- * Build a durable record. `now` is an injected clock returning an RFC 3339 UTC
- * timestamp; the record carries schema version 1, that timestamp, the body, and
- * the body's content digest.
- */
-export function createRecord({ recordType, body }, { now }) {
-  if (typeof recordType !== 'string' || recordType.length === 0) {
-    throw new Error('record requires a non-empty recordType');
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
   }
-  const createdAt = assertRfc3339Utc(now());
+  return value;
+}
+
+function body(record) {
   return {
-    recordType,
-    schemaVersion: 1,
-    createdAt,
-    body,
-    digest: contentDigest(body),
+    schemaVersion: record.schemaVersion,
+    schema: record.schema,
+    createdAt: record.createdAt,
+    payload: record.payload,
   };
+}
+
+export async function createRecord({ schema, payload, clock, sha256, registry }) {
+  assertDependencies(clock, sha256, registry);
+  const schemaName = assertSchema(schema);
+  const validatedPayload = validateSource(registry, schemaName, payload);
+  const createdAt = clock().toISOString();
+  if (!isExactUtcTimestamp(createdAt)) throw new TypeError("record timestamp must be exact RFC3339 UTC");
+  const recordBody = { schemaVersion: 1, schema, createdAt, payload: structuredClone(validatedPayload) };
+  const digest = await sha256(canonicalJson(recordBody));
+  if (!SHA256.test(digest)) throw new TypeError("sha256 dependency returned an invalid digest");
+  return deepFreeze({ ...recordBody, digest });
+}
+
+export async function verifyRecord(record, { sha256, registry }) {
+  if (typeof sha256 !== "function") throw new TypeError("sha256 dependency is required");
+  assertRegistry(registry);
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    throw new TypeError("record must be an object");
+  }
+  const fields = Object.keys(record).sort();
+  if (fields.length !== RECORD_FIELDS.length || fields.some((field, index) => field !== RECORD_FIELDS[index])) {
+    throw new TypeError("record has missing or unknown wrapper field");
+  }
+  if (record.schemaVersion !== 1) throw new TypeError("record schemaVersion must be 1");
+  const schemaName = assertSchema(record.schema);
+  if (!isExactUtcTimestamp(record.createdAt)) {
+    throw new TypeError("record timestamp must be RFC3339 UTC");
+  }
+  if (!SHA256.test(record.digest)) throw new TypeError("record digest must be full lowercase SHA-256");
+  const validatedPayload = validateSource(registry, schemaName, record.payload);
+  const expected = await sha256(canonicalJson(body(record)));
+  if (expected !== record.digest) throw new TypeError("record digest mismatch");
+  return deepFreeze(structuredClone(validatedPayload));
 }

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "name": "riot.protest.net",
+  "version": "1.0",
+  "price": "free",
+  "availability": "worldwide",
+  "releaseChannel": "public-early-access",
+  "appleBundleId": "net.protest.riot",
+  "androidApplicationId": "net.protest.riot",
+  "urls": {
+    "privacy": {
+      "url": "https://riot.protest.net/privacy/",
+      "evidencePath": "marketing/privacy/index.html",
+      "evidenceState": "current"
+    },
+    "support": {
+      "url": "https://riot.protest.net/support/",
+      "evidencePath": "marketing/support/index.html",
+      "evidenceState": "current"
+    },
+    "marketing": {
+      "url": "https://riot.protest.net/releases/",
+      "evidencePath": "marketing/releases/index.html",
+      "evidenceState": "current"
+    }
+  }
+}

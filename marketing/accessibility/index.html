@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Riot accessibility commitments: the early-access rehearsal scope for VoiceOver, TalkBack, and Mac keyboard use across iPhone, iPad, Mac, Android phone, and Android tablet.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Riot accessibility — early-access commitments and rehearsal scope</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3.2rem, 7.5vw, 6rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.2rem, 4.6vw, 3.6rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.5rem, 2.4vw, 2rem); }
+    p { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--green); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    .yellow .eyebrow { color: var(--ink); }
+    .grid { display: grid; gap: 18px; }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .card .label { display: block; margin-bottom: 10px; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .dark .card .label { color: #b8b3a8; }
+    .dark .card a { color: var(--pink); }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { position: relative; padding-left: 34px; margin-bottom: 12px; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; top: -2px; font-weight: 900; color: var(--pink); font-size: 1.2rem; }
+    .checklist.cross li::before { content: "✕"; color: var(--ink); }
+    .pull { padding: 26px 28px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.1rem; font-weight: 700; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.5rem, 13vw, 4.2rem); }
+      .cards-2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/why-riot/">Why Riot</a>
+        <a href="/guide/">Using Riot</a>
+        <a href="/about/">About</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/releases/">Get the app</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">Accessibility · early-access commitments</p>
+        <h1>Usable by more people, on purpose.</h1>
+        <p class="lede">This page states Riot's accessibility commitments for the 1.0 early-access release and the exact rehearsal scope those commitments rest on. These are commitments under test, not audit results.</p>
+      </div>
+    </header>
+
+    <section class="yellow" id="commitments">
+      <div class="wrap">
+        <p class="eyebrow">What we commit to</p>
+        <h2>Commitments for the 1.0 early-access release.</h2>
+        <p class="section-intro">Riot is community infrastructure; it fails its purpose if only some people can operate it. These commitments are recorded in the release source and gate the public release.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Core tasks, assistive technology first</span>
+            <ul class="checklist">
+              <li>Read your community newswire with VoiceOver (iPhone, iPad, Mac) and TalkBack (Android).</li>
+              <li>Create or join a community, and publish a signed update, using the same assistive technology.</li>
+              <li>Full keyboard operation on Mac, with a visible focus and no focus traps.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">Presentation</span>
+            <ul class="checklist">
+              <li>Text scales with system text-size settings without breaking layouts.</li>
+              <li>Color is never the only carrier of meaning; claims appear as text.</li>
+              <li>Contrast meets at least 4.5:1 for text in app surfaces and store materials.</li>
+              <li>Reduced-motion settings are respected on this site and in app surfaces that animate.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="dark" id="rehearsal">
+      <div class="wrap">
+        <p class="eyebrow">Rehearsal scope — what the commitments rest on</p>
+        <h2>Every device class. Every core task. Recorded.</h2>
+        <p class="section-intro">Before the public release, each core task is rehearsed with assistive technology on every device class Riot ships on, against the exact store build. Results are recorded as release evidence; a failed rehearsal blocks the release rather than being explained away.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Device classes</span>
+            <ul class="checklist">
+              <li>iPhone and iPad with VoiceOver.</li>
+              <li>Mac with VoiceOver and full keyboard.</li>
+              <li>Android phone and Android tablet with TalkBack.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">Core tasks per device</span>
+            <ul class="checklist">
+              <li>Read: open the app and read your community newswire.</li>
+              <li>Create: create or join a community.</li>
+              <li>Publish: publish a signed update to your community.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="yellow" id="honesty">
+      <div class="wrap">
+        <p class="eyebrow">Honest boundaries</p>
+        <h2>What this page is not.</h2>
+        <p class="section-intro">Version 1.0 is an early-access release. Accessibility work continues after release, and early builds will have rough edges we have not found yet.</p>
+        <ul class="checklist cross">
+          <li>This page is not an audit result, a VPAT, or a conformance claim to any formal standard.</li>
+          <li>The rehearsal scope covers the core tasks above; edge surfaces may lag behind.</li>
+          <li>If you hit an accessibility barrier, report it through the <a href="/support/">support channel</a> — accessibility reports are treated as release-blocking defects, not feature requests.</li>
+        </ul>
+        <p class="pull">Riot is free, with no in-app purchases. See the <a href="/releases/">releases page</a> for the current build and the <a href="/privacy/">privacy page</a> for the data posture.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a> · <a href="/support/">Support</a> · <a href="/accessibility/">Accessibility</a></p>
+    </div>
+  </footer>
+</body>
+</html>

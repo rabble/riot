@@ -1,0 +1,1 @@
+Version 1.0 is an early-access release. First public release: newswires, signed updates, editorial labels, tools, experimental nearby exchange, offline reading.

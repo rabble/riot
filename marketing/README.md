@@ -14,20 +14,26 @@ backend, analytics, remote fonts, or third-party runtime requests.
 - `/community/` — ways to follow, test, and contribute to the work.
 - `/releases/` — current build availability and platform notes.
 - `/protocols/` — source-backed protocol comparisons and detailed trust boundaries.
+- `/support/` — the public support and reporting channel: named operator
+  contact, public-channel response commitments, and an honest list of the
+  in-app moderation controls that are not shipped yet.
+- `/accessibility/` — early-access accessibility commitments and the exact
+  per-device rehearsal scope they rest on. Commitments under test, not audit
+  results.
 
 Primary navigation contains every route except Privacy. Privacy remains linked
-from relevant boundary copy and every footer. Every footer links all nine
+from relevant boundary copy and every footer. Every footer links all eleven
 routes, including the page currently being viewed.
 
 ## Crawl metadata
 
 `public/sitemap.xml` and `public/robots.txt` live only in the deployment mirror.
-The sitemap lists the exact nine editorial routes at the configured Workers
+The sitemap lists the exact eleven editorial routes at the configured Workers
 origin. Robots allows all user-agents and points to the sitemap.
 
 ## Source and deployment mirrors
 
-Edit these nine editorial source files first:
+Edit these eleven editorial source files first:
 
 - `index.html`
 - `why-riot/index.html`
@@ -38,6 +44,8 @@ Edit these nine editorial source files first:
 - `community/index.html`
 - `releases/index.html`
 - `protocols/index.html`
+- `support/index.html`
+- `accessibility/index.html`
 
 Then update their byte-identical deployment mirrors:
 
@@ -50,6 +58,8 @@ Then update their byte-identical deployment mirrors:
 - `public/community/index.html`
 - `public/releases/index.html`
 - `public/protocols/index.html`
+- `public/support/index.html`
+- `public/accessibility/index.html`
 
 Real desktop app screens used by the homepage live in `assets/screenshots/` and
 their byte-identical deployment copies live in `public/assets/screenshots/`.
@@ -76,7 +86,7 @@ From the repository root:
 python3 -m http.server 4173 --directory marketing/public
 ```
 
-Then open the nine routes:
+Then open the eleven routes:
 
 - `http://localhost:4173/`
 - `http://localhost:4173/why-riot/`
@@ -87,6 +97,8 @@ Then open the nine routes:
 - `http://localhost:4173/community/`
 - `http://localhost:4173/releases/`
 - `http://localhost:4173/protocols/`
+- `http://localhost:4173/support/`
+- `http://localhost:4173/accessibility/`
 
 The crawl artifacts are at `/sitemap.xml` and `/robots.txt` on the same local
 origin.

@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "id": "first-launch",
+      "initiator": "application",
+      "destinationClass": "none",
+      "transmittedFields": [],
+      "redirectHandling": "No request or redirect is made on first launch.",
+      "retention": "No remote retention.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": false,
+      "platformCodePaths": {
+        "ios": ["apps/ios/Riot/RiotApp.swift"],
+        "ipados": ["apps/ios/Riot/RiotApp.swift"],
+        "macos": ["apps/macos/Riot/RiotMacApp.swift"],
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt"]
+      }
+    },
+    {
+      "id": "denied-permission",
+      "initiator": "user",
+      "destinationClass": "none",
+      "transmittedFields": [],
+      "redirectHandling": "Denied permission does not initiate a request.",
+      "retention": "Permission state remains platform-local.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": true,
+      "platformCodePaths": {
+        "ios": ["apps/ios/Riot/QRScannerView.swift"],
+        "ipados": ["apps/ios/Riot/QRScannerView.swift"],
+        "macos": ["apps/ios/Riot/QRScannerView.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt"]
+      }
+    },
+    {
+      "id": "granted-permission",
+      "initiator": "user",
+      "destinationClass": "local-device-subsystem",
+      "transmittedFields": ["permission-scoped sensor or discovery data"],
+      "redirectHandling": "Platform permission APIs do not follow web redirects.",
+      "retention": "Riot does not operate a remote retention service.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": true,
+      "platformCodePaths": {
+        "ios": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"],
+        "ipados": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"],
+        "macos": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyPermissions.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt"]
+      }
+    },
+    {
+      "id": "nearby-sync",
+      "initiator": "user",
+      "destinationClass": "user-selected nearby peer",
+      "transmittedFields": ["signed community records", "peer discovery metadata"],
+      "redirectHandling": "Direct local-network transport does not follow HTTP redirects.",
+      "retention": "The receiving peer retains records under its local community state.",
+      "developerOperated": false,
+      "developerRetention": "peer-local",
+      "userDirected": true,
+      "platformCodePaths": {
+        "ios": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"],
+        "ipados": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"],
+        "macos": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "apps/macos/Riot.xcodeproj/project.pbxproj", "crates/riot-transport/src/lib.rs"],
+        "android": ["apps/android/app/src/main/kotlin/net/protest/riot/transport/AndroidNearbyController.kt", "apps/android/app/src/main/kotlin/net/protest/riot/transport/NearbyTransport.kt", "crates/riot-transport/src/lib.rs"]
+      }
+    },
+    {
+      "id": "followed-site-refresh",
+      "initiator": "user",
+      "destinationClass": "followed public site",
+      "transmittedFields": ["HTTP request metadata"],
+      "redirectHandling": "Transport policy validates the followed destination; redirect behavior remains subject to candidate audit.",
+      "retention": "Destination-server retention is outside Riot developer control.",
+      "developerOperated": false,
+      "developerRetention": "destination-controlled",
+      "userDirected": true,
+      "platformCodePaths": {
+        "ios": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"],
+        "ipados": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"],
+        "macos": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift", "apps/macos/Riot.xcodeproj/project.pbxproj"],
+        "android": ["crates/riot-core/src/site/follow.rs", "apps/android/app/src/main/kotlin/net/protest/riot/FollowSite.kt", "apps/android/app/src/main/kotlin/net/protest/riot/MainActivity.kt"]
+      }
+    }
+  ]
+}
