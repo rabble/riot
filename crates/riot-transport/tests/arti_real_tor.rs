@@ -23,9 +23,9 @@ use riot_transport::Dialer;
 
 /// DuckDuckGo's v3 onion — a widely-used, reliably-connectable plain onion
 /// service (no client-auth, no PoW gate), common as a Tor connectivity smoke
-/// target. Port 80. Used here to prove Riot's Tor plumbing (bootstrap →
+/// target. Port 443. Used here to prove Riot's Tor plumbing (bootstrap →
 /// circuit → onion stream) reaches a real onion service end to end.
-const DUCKDUCKGO_ONION: &str = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:80";
+const DUCKDUCKGO_ONION: &str = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443";
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires network + Tor reachability; run with --ignored"]

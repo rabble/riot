@@ -1,0 +1,55 @@
+[package]
+name = "bab_rs"
+version = "0.8.1"
+edition = "2024"
+description = "An implementation of the Bab family of hash functions, and its WILLIAM3 instantiation."
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/worm-blossom/bab_rs"
+
+[features]
+default = ["william3", "storage"]
+std = []
+dev = ["dep:arbitrary", "std"]
+
+# Provide an implementation of the WILLIAM3 parameterisation of Bab. Enabled by default.
+william3 = ["dep:arrayref"]
+# Provide storage APIs, depending on std
+storage = ["std", "dep:async-fs", "dep:futures-lite"]
+
+[dependencies]
+arrayref = { version = "0.3.5", optional = true }
+anyhash = "0.1.3"
+constant_time_eq = { version = "0.4.2", default-features = false }
+zeroize = { version = "1.8.2", default-features = false }
+order_theory = "0.1.7"
+ufotofu = { version = "0.12.1", default-features = false }
+frugal_async = "0.1.0"
+derive_more = { version = "2.1.1", default-features = false, features = [
+    "display",
+    "error",
+] }
+
+# Dependencies when enabling the `dev` feature:
+arbitrary = { version = "1.0.2", features = ["derive"], optional = true }
+
+# Dependencies when enabling the `backends` feature:
+async-fs = { version = "2.2.0", optional = true }
+futures-lite = { version = "2.6.1", optional = true }
+
+[dev-dependencies]
+pollster = "0.4.0"
+tempfile = "3.27.0"
+ufotofu = { version = "0.12.0", features = ["alloc"] }
+
+[lints.rust]
+async_fn_in_trait = "allow"
+missing_docs = "warn"
+
+# docs.rs-specific configuration
+[package.metadata.docs.rs]
+# document all features
+all-features = true
+
+
+# [patch.crates-io]
+# ufotofu = { path = "../ufotofu/ufotofu" }

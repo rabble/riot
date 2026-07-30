@@ -482,8 +482,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "bab_rs"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b80f2b89b5f64db0f0fadd7c3144ab78fd2082925ca438f961c7c346c9bcc29f"
 dependencies = [
  "anyhash",
  "arbitrary",
@@ -8095,8 +8093,6 @@ dependencies = [
 [[package]]
 name = "willow25"
 version = "0.6.0-alpha.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6477a05fe4a055b0cb95d3eec60e10e5753551bc1d8fb67cb7642b61e6caf377"
 dependencies = [
  "anyhash",
  "arbitrary",
