@@ -16,3 +16,8 @@ Vine Is Back*
 .DS_Store
 node_modules/
 *.xcuserstate
+
+# V8 coverage output from `node --test`. Generated per run, PID- and
+# timestamp-named, referenced by nothing. 17 of these were tracked, so every
+# session started with a dirty tree and pathspec commits had to dodge them.
+coverage/tmp/
