@@ -1,4 +1,12 @@
 import Foundation
+import OSLog
+
+/// Diagnostics for the recovery ladder. Losing a profile is the most
+/// consequential thing this app does to a person's data, and until now it
+/// happened without a single log line naming the cause.
+enum ProfileRecoveryLog {
+    static let logger = Logger(subsystem: "net.protest.riot", category: "profile-recovery")
+}
 
 public struct RiotSpace: Codable, Equatable, Sendable {
     public let namespaceID: String
@@ -406,6 +414,22 @@ public final class RiotProfileRepository {
                 persisted: persisted, keyStore: keyStore, databasePath: databasePath
             )
         } catch {
+            // THE most consequential line in this file. Reaching here means the
+            // saved identity could not be reopened, so the person is about to
+            // become a NEW author: reads still work, but every write into their
+            // existing community is refused for lack of authority. That looked
+            // like "reactions are broken" with nothing in the log to say why.
+            ProfileRecoveryLog.logger.error(
+                """
+                profile-open FAILED — quarantining profile and starting fresh. \
+                error=\(String(describing: error), privacy: .public) \
+                hadSealedIdentity=\(persisted.sealedIdentity != nil, privacy: .public) \
+                hadSpace=\(persisted.space != nil, privacy: .public) \
+                durableDatabase=\(databasePath != nil, privacy: .public). \
+                A NEW author will be minted; writes into the previous community \
+                will be refused until the identity is recovered.
+                """
+            )
             let ref = try? quarantine.quarantine(
                 Self.coreArtifacts(snapshot: storage.snapshotURL, databasePath: databasePath),
                 reason: .profileOpen,

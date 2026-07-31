@@ -70,7 +70,44 @@ pub fn init_app_logging(level: LogLevel) {
         // that impossible here, but swallow defensively so a subscriber race
         // can never panic the FFI boundary.
         let _ = tracing::dispatcher::set_global_default(build_dispatch(level));
+        install_panic_hook();
     });
+}
+
+/// Routes Rust panics into the same subscriber as everything else, BEFORE the
+/// FFI boundary catches them.
+///
+/// The release profile is `panic = "unwind"` precisely so `catch_unwind` at the
+/// FFI seam can quarantine a panicking session instead of killing the app. The
+/// cost is that a panic became invisible: `with_active` turns it into a bare
+/// `MobileError::Internal`, Swift maps `.Internal` into the same bucket as
+/// authority failures, and a person is told "Reactions aren't available for
+/// this post" for what is actually a crash in the core. The payload and source
+/// location were discarded before anyone could read them.
+///
+/// This hook does not change control flow — the panic still unwinds and is
+/// still caught. It only makes sure the reason is written down first.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        tracing::error!(
+            target: "riot::panic",
+            location = %location,
+            payload = %payload,
+            "RUST PANIC caught at the FFI boundary — the operation will surface as MobileError::Internal"
+        );
+        previous(info);
+    }));
 }
 
 /// Builds the process subscriber. Extracted from `init_app_logging` so tests

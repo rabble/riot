@@ -2575,8 +2575,14 @@ private struct NewswireCommentComposeSheet: View {
                     Text("Your reply")
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                    TextField("Your reply", text: $text, axis: .vertical)
+                    // SwiftUI draws a TextField's title as its PLACEHOLDER while
+                    // the field is empty, so passing "Your reply" here printed
+                    // the same words twice — once as the caption above, once
+                    // inside the box. The caption is the visible label; this
+                    // field carries the name only for assistive technology.
+                    TextField("", text: $text, axis: .vertical)
                         .font(.riot(.body, size: 15, relativeTo: .body))
+                        .accessibilityLabel("Your reply")
                         .accessibilityIdentifier("comment-body")
                 }
                 Button("Reply") {

@@ -1122,3 +1122,111 @@ fn an_unknown_reaction_kind_is_refused() {
         .toggle_newswire_reaction(space.entry_id, post.entry_id, "party".into(), true)
         .is_err());
 }
+
+// --- Reader-side writes: the path every real person actually takes ----------
+//
+// Every other test in this file has ONE profile that CREATES the space and then
+// writes into its own store. Nobody uses Riot that way. A person joins a
+// community someone else published, receives its descriptor and posts over
+// sync, and then reacts and replies to other people's reports.
+//
+// That path had no test at all, which is how a build shipped where reading
+// worked and every write came back "Reactions aren't available for this post"
+// and "That reply was not accepted."
+
+/// Carries a signed record from one profile into another exactly as sync does:
+/// inspect the bytes, plan, accept. Nothing is injected into the reader's store.
+fn carry(reader: &riot_ffi::MobileProfile, signed_bytes: Vec<u8>) {
+    let preview = reader
+        .inspect_bytes(signed_bytes, "test-sync".into())
+        .expect("inspect carried bytes");
+    preview
+        .create_plan(Vec::new())
+        .expect("plan carried bytes")
+        .accept()
+        .expect("accept carried bytes");
+}
+
+#[test]
+fn a_reader_who_joined_a_community_can_reply_to_someone_elses_post() {
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast at the church"))
+        .expect("create post");
+
+    // The reader JOINS the published community, exactly as the app does with a
+    // riot:// share reference, before any of its records are carried across.
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+    let reader = open_local_profile().expect("reader profile");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join community");
+    carry(&reader, space.signed_bytes.clone());
+    carry(&reader, post.signed_bytes.clone());
+
+    let reply = reader.create_newswire_comment(
+        space.entry_id.clone(),
+        post.entry_id.clone(),
+        "I can bring bread.".into(),
+        "en".into(),
+    );
+    assert!(
+        reply.is_ok(),
+        "a joined reader must be able to reply to another author's post, got {:?}",
+        reply.err()
+    );
+}
+
+#[test]
+fn a_reader_who_joined_a_community_can_react_to_someone_elses_post() {
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Rent strike meeting"))
+        .expect("create post");
+
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+    let reader = open_local_profile().expect("reader profile");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join community");
+    carry(&reader, space.signed_bytes.clone());
+    carry(&reader, post.signed_bytes.clone());
+
+    let reaction = reader.toggle_newswire_reaction(
+        space.entry_id.clone(),
+        post.entry_id.clone(),
+        "solidarity".into(),
+        true,
+    );
+    assert!(
+        reaction.is_ok(),
+        "a joined reader must be able to react to another author's post, got {:?}",
+        reaction.err()
+    );
+}

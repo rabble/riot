@@ -2033,6 +2033,14 @@ pub(crate) fn with_active<T>(
     })) {
         Ok(result) => result,
         Err(_) => {
+            // The panic itself is reported by the hook in `logging.rs`; this
+            // records the consequence, which is far worse than one failed
+            // call: the whole session is quarantined, so EVERY later operation
+            // returns SessionFailed until the profile is reopened.
+            tracing::error!(
+                target: "riot::ffi",
+                "panic caught in with_active — session marked Failed; all later calls return SessionFailed until reopen"
+            );
             *lock_unpoisoned(inner) = ProfileState::Failed;
             Err(MobileError::Internal)
         }

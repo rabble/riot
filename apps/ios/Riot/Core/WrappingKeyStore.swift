@@ -23,10 +23,32 @@ public final class KeychainWrappingKeyStore: DestructibleSecretStore {
         let (status, existing) = read()
         switch (status, existing) {
         case (errSecSuccess, let key?):
+            // The ONLY outcome that preserves an existing identity. Everything
+            // else below mints a new key, and a new key cannot unseal the
+            // identity already on disk — the profile is then quarantined at
+            // open and the person silently becomes a new author with no
+            // authority in their own community. That failure was invisible
+            // because this path said nothing; it says something now.
+            Self.logger.notice("wrapping key loaded from keychain (existing identity preserved)")
             return key
         case (errSecItemNotFound, _):
+            Self.logger.error(
+                """
+                wrapping key NOT FOUND in keychain (service=\(self.service, privacy: .public), \
+                account=\(self.account, privacy: .public)) — minting a NEW key. Any identity \
+                sealed with the previous key can no longer be opened and its profile will be \
+                quarantined at next open.
+                """
+            )
             return try create()
         default:
+            Self.logger.error(
+                """
+                wrapping key UNREADABLE: OSStatus=\(status, privacy: .public) \
+                (service=\(self.service, privacy: .public)). Failing closed rather than \
+                minting a replacement key.
+                """
+            )
             throw KeychainWrappingKeyError.status(status)
         }
     }
