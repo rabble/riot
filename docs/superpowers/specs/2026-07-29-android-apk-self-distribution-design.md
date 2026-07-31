@@ -148,16 +148,44 @@ of which the module has today.
 A received APK that does not carry the receiver's ABI fails to install with a
 message that explains nothing.
 
-Measured 2026-07-29: `jniLibs/arm64-v8a` = 5.0M, `jniLibs/x86_64` = 4.9M,
-2-ABI debug APK = 14M. Adding `armeabi-v7a` costs roughly +3M compressed, for a
-universal APK around 15–17M.
+**Corrected 2026-07-31.** The original estimate here — 5.0M per ABI from
+`build/native/android/jniLibs`, giving a ~15–17M universal APK — measured a DEV
+build and was wrong by a factor of three. Numbers from the actual signed 0.1.2
+release APK:
 
-**Decision: one universal APK — `arm64-v8a`, `armeabi-v7a`, `x86_64` — on every
-channel.** At this size, splitting per-ABI to save ~4MB would buy a variant
-matrix, ABI-mismatch UX, and (when the installed build is not the shareable one)
-bitchat's entire download-resume-and-pin subsystem. Not worth it. One universal
-APK makes "the app I am running" and "the app anyone can install" the same
-sentence, which is what keeps `ShareApkSource` at twenty lines.
+| | |
+|---|---|
+| `lib/arm64-v8a/libriot_ffi.so` | 19.1 MB uncompressed |
+| `lib/x86_64/libriot_ffi.so` | 20.9 MB uncompressed |
+| `classes.dex` + `classes2.dex` | 19.2 MB |
+| **signed 2-ABI release APK** | **46 MB** |
+
+Adding `armeabi-v7a` therefore lands the universal APK near **60–65 MB**, not
+17 MB. Always measure a release artifact; the Rust staticlib is where the size
+is, and the debug jniLibs tree is not representative of it.
+
+**Decision stands: one universal APK — `arm64-v8a`, `armeabi-v7a`, `x86_64` — on
+every channel**, but the reasoning changes and the UX consequences are real.
+
+The decision survives because the saving was never the point. Splitting per-ABI
+buys a variant matrix, ABI-mismatch UX, and — when the installed build is not
+the shareable one — bitchat's entire download-resume-and-pin subsystem. One
+universal APK makes "the app I am running" and "the app anyone can install" the
+same sentence, which is what keeps `ShareApkSource` at twenty lines. That is
+worth ~20 MB.
+
+What the real size DOES change:
+
+- **60 MB over Wi-Fi Direct is a minute or two, not seconds.** The transfer
+  screen needs honest progress and a byte count, not a spinner. Both phones
+  must stay awake for it — the wake locks are load-bearing, not belt-and-braces.
+- **`Range` resume stops being a nicety.** A dropped 60 MB transfer that
+  restarts from zero is a feature people give up on.
+- **Storage matters on the cheap phones this targets.** The landing page should
+  state the download size before the tap, so nobody starts it with 40 MB free.
+- **A future size cut is worth real effort** — `armeabi-v7a` bundled with a
+  release-mode `opt-level="z"` staticlib, or splitting the Rust core's debug
+  symbols, would move a number that people feel while standing in a street.
 
 Requires adding the `armv7-linux-androideabi` Rust target to
 `scripts/build-native-core.sh` (or its Android equivalent) and to the ABI list
