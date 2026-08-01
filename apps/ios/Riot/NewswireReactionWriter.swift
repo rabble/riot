@@ -36,6 +36,10 @@ public enum ReactionFailureKind: String, Sendable {
     case authorityOrInput
     case capacity
     case clock
+    /// The community itself has not arrived on this device yet — the sidebar
+    /// calls it "Not synced yet". Recoverable by waiting for a sync, so it is
+    /// NOT an authority failure and must not be reported as one.
+    case communityNotSynced
 }
 
 /// The only error value allowed past the writer boundary. Every field is fixed
@@ -69,10 +73,15 @@ public struct ReactionFailure: Equatable, Sendable {
                 kind: .retryablePersistence,
                 publicCode: "reaction_persistence",
                 message: "Couldn’t save your reaction. Try again.")
+        case .CommunityUnavailable:
+            self.init(
+                kind: .communityNotSynced,
+                publicCode: "reaction_community_not_synced",
+                message: "This community hasn’t reached this device yet. Exchange with a member, then react.")
         case .InvalidInput, .ObjectClosed, .StalePreview, .AppRejected,
              .Internal, .DraftNotFound, .ImportRejected, .PreviewConsumed,
              .PlanConsumed, .EntropyUnavailable, .NotSpaceOrganizer,
-             .LegacyProfileCannotOrganize, .CommunityUnavailable, .none:
+             .LegacyProfileCannotOrganize, .none:
             self.init(
                 kind: .authorityOrInput,
                 publicCode: "reaction_authority_or_input",

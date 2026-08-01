@@ -1287,3 +1287,52 @@ fn a_durable_reader_can_reply_to_a_carried_post() {
         reaction.err()
     );
 }
+
+/// A community joined by reference whose descriptor has NOT yet arrived — the
+/// state the sidebar calls "Not synced yet". Writing into it cannot succeed,
+/// but it must fail HONESTLY: the person is told what is wrong, not handed
+/// `Internal`, which the UI maps into the same bucket as a permissions problem
+/// and renders as "Reactions aren't available for this post".
+#[test]
+fn writing_into_a_community_whose_descriptor_has_not_arrived_fails_honestly() {
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    // Joined, but nothing carried across yet.
+    let reader = open_local_profile().expect("reader profile");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join community");
+
+    let error = reader
+        .create_newswire_comment(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "I can bring bread.".into(),
+            "en".into(),
+        )
+        .expect_err("a reply into an unsynced community cannot be admitted");
+
+    assert!(
+        !matches!(error, riot_ffi::MobileError::Internal),
+        "an unsynced community must not report Internal — the UI maps that to \
+         an authority failure and tells the person reactions are unavailable, \
+         which is neither true nor actionable. Got {error:?}"
+    );
+}

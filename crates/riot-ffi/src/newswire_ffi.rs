@@ -1104,10 +1104,28 @@ fn map_newswire_error(error: riot_core::newswire::NewswireError) -> MobileError 
 }
 
 fn map_newswire_store_error(error: riot_core::newswire::NewswireStoreError) -> MobileError {
-    // Store-load failures (descriptor missing, decode error) were silently
-    // collapsed to Internal; log the precise variant for diagnostics.
-    warn!(target: "riot::newswire", error = ?error, "NewswireStoreError collapsed to MobileError::Internal");
-    MobileError::Internal
+    use riot_core::newswire::NewswireStoreError as StoreError;
+    // A community joined by reference whose descriptor has not yet arrived is
+    // the ORDINARY state of every fresh join — the sidebar calls it "Not synced
+    // yet". Collapsing it to `Internal` made the app tell people "Reactions
+    // aren't available for this post" and "That reply was not accepted",
+    // because Swift maps `Internal` into the same bucket as a permissions
+    // failure. It is not a permissions failure and it is not a bug in the
+    // record: the community simply is not here yet, and it is recoverable by
+    // waiting for a sync. `CommunityUnavailable` says exactly that.
+    match error {
+        StoreError::DescriptorNotFound => {
+            warn!(
+                target: "riot::newswire",
+                "space descriptor not held — community not synced yet; reporting CommunityUnavailable"
+            );
+            MobileError::CommunityUnavailable
+        }
+        other => {
+            warn!(target: "riot::newswire", error = ?other, "NewswireStoreError collapsed to MobileError::Internal");
+            MobileError::Internal
+        }
+    }
 }
 
 fn map_core_error_inner(error: riot_core::session::SessionError) -> MobileError {

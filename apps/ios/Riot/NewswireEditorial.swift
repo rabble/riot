@@ -1300,6 +1300,12 @@ public final class NewswireSurfaceModel: ObservableObject {
                 disabledReactionKeys.insert(key)
             case .retryablePersistence:
                 break
+            case .communityNotSynced:
+                // Deliberately does NOT disable the row. The community is
+                // simply not here yet; once it syncs the same tap succeeds,
+                // and greying the control out would tell the person their
+                // reaction is impossible when it is only early.
+                break
             }
             announce(failure.message, surface: surface)
         case .cancelled:
