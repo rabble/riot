@@ -7,6 +7,7 @@
 //! cannot derive the same front page as its peers, and the signed record is
 //! a promise the app cannot keep.
 
+use riot_ffi::open_local_profile_with_database;
 use riot_ffi::NewswireProjectedComment;
 use riot_ffi::{
     open_local_profile, AlertCertainty, AlertSeverity, AlertUrgency, NewswireAlertProfile,
@@ -1227,6 +1228,62 @@ fn a_reader_who_joined_a_community_can_react_to_someone_elses_post() {
     assert!(
         reaction.is_ok(),
         "a joined reader must be able to react to another author's post, got {:?}",
+        reaction.err()
+    );
+}
+
+/// DURABLE reader. The in-memory twin of this test passes, and so does the
+/// durable self-authored journey — the untested intersection was a reader who
+/// holds someone else's community in a REAL SQLite store and then writes into
+/// it. That is the configuration a shipped app is always in.
+#[test]
+fn a_durable_reader_can_reply_to_a_carried_post() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("reader.db").to_string_lossy().to_string();
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    let reader = open_local_profile_with_database(db_path).expect("durable reader profile");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join community");
+    carry(&reader, space.signed_bytes.clone());
+    carry(&reader, post.signed_bytes.clone());
+
+    let reply = reader.create_newswire_comment(
+        space.entry_id.clone(),
+        post.entry_id.clone(),
+        "I can bring bread.".into(),
+        "en".into(),
+    );
+    assert!(
+        reply.is_ok(),
+        "a durable reader must be able to reply to a carried post, got {:?}",
+        reply.err()
+    );
+
+    let reaction =
+        reader.toggle_newswire_reaction(space.entry_id, post.entry_id, "solidarity".into(), true);
+    assert!(
+        reaction.is_ok(),
+        "a durable reader must be able to react to a carried post, got {:?}",
         reaction.err()
     );
 }
