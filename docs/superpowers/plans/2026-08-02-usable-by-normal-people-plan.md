@@ -1,5 +1,47 @@
 # Making Riot usable by normal people
 
+## ROOT CAUSE FOUND 2026-08-02 — reactions and replies
+
+The step-marker instrumentation named it:
+
+```
+newswire import step failed  error=Internal  step="ensure_complete_sync_inventory"
+```
+
+`mobile_state.rs::ensure_complete_sync_inventory`:
+
+```rust
+let inventory_ids = profile.sync_inventory.iter().map(entry_id).collect();
+if inventory_ids != live_ids {
+    return Err(MobileError::Internal);   // every write dies here
+}
+```
+
+After an anchor-relay pull the store gains entries (`imported=4` for River City
+Wire in the field log) but the in-memory `profile.sync_inventory` is not
+refreshed to match. From then on EVERY write into that community is refused,
+while reads keep working because the store really does hold the data.
+
+That is the whole reported bug: "Reactions aren't available for this post" and
+"That reply was not accepted."
+
+Why no test caught it: a locally-created community maintains the inventory as
+you write, so the two always agree. Only a RELAY-PULLED community diverges — the
+one configuration nothing covered.
+
+**The fix, red first:** a test that pulls (or simulates a pull that imports
+entries without touching `sync_inventory`), then writes, and expects success.
+Then either refresh the inventory at the end of the pull path, or have
+`ensure_complete_sync_inventory` rebuild it from the store instead of failing
+closed. Rebuilding is likely correct — the inventory is a cache of store state,
+and a cache that disagrees with its source should be repaired, not fatal.
+
+This supersedes the guess that a joined-but-unsynced descriptor was the cause;
+the `CommunityUnavailable` mapping shipped earlier is still right, but it was
+not this.
+
+
+
 **Date:** 2026-08-02
 **Status:** Plan, in progress
 **Rule for this plan:** every fix lands red/green. No fix without a test that
