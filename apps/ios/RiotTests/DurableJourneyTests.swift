@@ -69,6 +69,40 @@ final class DurableJourneyTests: XCTestCase {
 
     // MARK: - Journey 1: anything written survives a relaunch
 
+    /// The relay registry is part of the same durable profile the app opens at
+    /// launch. The built-in relay is only a first-run seed; a runtime relay must
+    /// take precedence, survive the reopen, and be the input to the registered
+    /// pull path without reconstructing a NodeId or ticket in Swift.
+    func testARuntimeRelaySurvivesAProfileReopenAndDrivesTheNextPull() throws {
+        let workspace = try makeWorkspace("relay-survives")
+        let customRelay = RelayRecord(
+            nodeId: String(repeating: "11", count: 32),
+            ticketBytes: Data([0xa1, 0xb2, 0xc3]),
+            lastAnsweredUnixSeconds: nil
+        )
+
+        do {
+            let first = try open(workspace)
+            let seeded = try XCTUnwrap(first.durableProfile.relayForNextPull())
+            XCTAssertEqual(seeded.nodeId, AnchorRelayDefaults.relayNodeId)
+            XCTAssertEqual(seeded.ticketBytes, AnchorRelayDefaults.communityTicket)
+            try first.durableProfile.addRelay(relay: customRelay)
+        }
+
+        let second = try open(workspace)
+        let relays = try second.durableProfile.listRelays()
+        XCTAssertEqual(relays.first, customRelay)
+        XCTAssertEqual(relays.count, 2, "the seeded relay remains available behind the runtime relay")
+        XCTAssertEqual(try second.durableProfile.relayForNextPull(), customRelay)
+
+        let runtime = try bindNetRuntime()
+        XCTAssertThrowsError(
+            try runtime.syncWithNextRelay(profile: second.durableProfile, nowUnix: 1)
+        ) { error in
+            XCTAssertEqual(error as? AnchorSyncError, .TicketMalformed)
+        }
+    }
+
     /// The most basic promise the app makes, and it was never tested end to end
     /// against a real database: post an update, close the app, open it again,
     /// and the update is still there.

@@ -51,6 +51,8 @@ pub enum AnchorSyncError {
     Import { reason: String },
     /// The anchor address hint did not parse to a dialable endpoint address.
     BadAnchorAddress { reason: String },
+    /// No relay has been remembered by this durable profile yet.
+    NoRelayConfigured,
     /// The FFI-owned iroh endpoint / tokio runtime could not be bound.
     Bind { reason: String },
 }
@@ -63,6 +65,7 @@ impl std::fmt::Display for AnchorSyncError {
             Self::Transport { reason } => write!(f, "TRANSPORT_ERROR: {reason}"),
             Self::Import { reason } => write!(f, "IMPORT_ERROR: {reason}"),
             Self::BadAnchorAddress { reason } => write!(f, "BAD_ANCHOR_ADDRESS: {reason}"),
+            Self::NoRelayConfigured => write!(f, "NO_RELAY_CONFIGURED"),
             Self::Bind { reason } => write!(f, "BIND_ERROR: {reason}"),
         }
     }
@@ -110,6 +113,33 @@ pub fn bind_net_runtime() -> Result<Arc<MobileNetRuntime>, AnchorSyncError> {
 
 #[uniffi::export]
 impl MobileNetRuntime {
+    /// Pull using the durable profile's next remembered relay. The profile owns
+    /// the relay's NodeId and admission ticket; the host never has to reconstruct
+    /// either value from a compiled-in constant.
+    pub fn sync_with_next_relay(
+        &self,
+        profile: Arc<MobileProfile>,
+        now_unix: u64,
+    ) -> Result<AnchorSyncOutcome, AnchorSyncError> {
+        let relay = profile
+            .relay_for_next_pull()
+            .map_err(|error| AnchorSyncError::Import {
+                reason: error.to_string(),
+            })?
+            .ok_or(AnchorSyncError::NoRelayConfigured)?;
+        let outcome = self.sync_with_anchor(
+            Arc::clone(&profile),
+            relay.node_id.clone(),
+            relay.ticket_bytes,
+            now_unix,
+        )?;
+        crate::mobile_state::mark_relay_answered(&profile.inner, &relay.node_id, now_unix)
+            .map_err(|error| AnchorSyncError::Import {
+                reason: error.to_string(),
+            })?;
+        Ok(outcome)
+    }
+
     /// Pull a community's committed O/C/W data from the anchor identified by
     /// `anchor_hint` (a `<id_hex>` or `<id_hex>@<ip:port>,…` node hint), verify
     /// every entry through the canonical gate, and import the store-admissible
@@ -140,5 +170,30 @@ impl MobileNetRuntime {
         runtime
             .sync_with_anchor(&profile.inner, anchor_addr, &ticket_bytes, now_unix)
             .map_err(AnchorSyncError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobile_api::RelayRecord;
+    use crate::mobile_state::open_local_profile;
+
+    #[test]
+    fn registered_pull_reads_the_profile_selected_relay() {
+        let profile = open_local_profile().expect("profile opens");
+        profile
+            .add_relay(RelayRecord {
+                node_id: "11".repeat(32),
+                ticket_bytes: vec![0xa1, 0xb2, 0xc3],
+                last_answered_unix_seconds: None,
+            })
+            .expect("remember relay");
+        let runtime = bind_net_runtime().expect("net runtime binds");
+
+        let error = runtime
+            .sync_with_next_relay(profile, 1)
+            .expect_err("the selected test ticket is malformed");
+        assert!(matches!(error, AnchorSyncError::TicketMalformed));
     }
 }

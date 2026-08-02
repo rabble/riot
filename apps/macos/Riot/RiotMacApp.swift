@@ -31,7 +31,7 @@ struct RiotMacApp: App {
             // A developer affordance (macOS-only, `net`-feature): dial the
             // deployed anchor relay over the internet and import a community,
             // then report the outcome. Same path the RiotKitTests-macOS live
-            // proof exercises — `bindNetRuntime()` + `syncWithAnchor(...)`.
+            // proof exercises — `bindNetRuntime()` + `syncWithNextRelay(...)`.
             CommandMenu("Debug") {
                 Button("Pull Community From Live Anchor Relay") {
                     AnchorRelayDebugPull.run()
@@ -97,7 +97,7 @@ struct RiotMacApp: App {
 enum AnchorRelayDebugPull {
     /// The deployed relay's stable NodeId (64 hex) — the WHOLE dial hint. No IP,
     /// no port. The FFI net runtime binds under the `N0` preset (iroh relay +
-    /// pkarr/DNS discovery on), so `syncWithAnchor` resolves this NodeId to a live
+    /// pkarr/DNS discovery on), so `syncWithNextRelay` resolves this NodeId to a live
     /// address and NAT-traverses. This mirrors the iOS default
     /// (`AnchorRelayDefaults.relayNodeId`) so macOS and iOS dial the same way.
     private static let anchorHint =
@@ -123,18 +123,22 @@ enum AnchorRelayDebugPull {
     /// Kick the pull off the main thread (the FFI `block_on`s the dial), then
     /// present the result on the main thread.
     static func run() {
-        let ticket = decodeHex(ticketHex)
         let now = UInt64(Date().timeIntervalSince1970)
         Task.detached(priority: .userInitiated) {
             let title: String
             let message: String
             do {
                 let profile = try openLocalProfile()
+                try profile.addRelay(
+                    relay: RelayRecord(
+                        nodeId: anchorHint,
+                        ticketBytes: decodeHex(ticketHex),
+                        lastAnsweredUnixSeconds: nil
+                    )
+                )
                 let runtime = try bindNetRuntime()
-                let outcome = try runtime.syncWithAnchor(
+                let outcome = try runtime.syncWithNextRelay(
                     profile: profile,
-                    anchorHint: anchorHint,
-                    ticketBytes: ticket,
                     nowUnix: now
                 )
                 let verified = outcome.namespaces.reduce(0) { $0 + $1.verified }

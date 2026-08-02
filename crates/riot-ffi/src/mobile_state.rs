@@ -36,9 +36,10 @@ use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
     CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
     MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
-    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
-    SyncOutcomeKind, SyncedCommunityCandidate,
+    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, RelayRecord, SignedAlert,
+    SyncOutcome, SyncOutcomeKind, SyncedCommunityCandidate,
 };
+use crate::relay_registry::{RelayRegistry, RELAY_REGISTRY_KEY, RELAY_REGISTRY_QUARANTINE_KEY};
 
 pub(crate) enum ProfileState {
     Active(Box<LocalProfile>),
@@ -152,6 +153,9 @@ pub(crate) struct LocalProfile {
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
     db: Option<riot_core::store::RiotDatabase>,
+    /// The relay records this profile has explicitly remembered. Newest first;
+    /// the first record is the target for the next registered pull.
+    pub(crate) relay_registry: RelayRegistry,
     /// The held communities and which one is active (Unit 3). Source of truth in
     /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
     // pub(crate) so the site-follow importer can read the Following gate and stamp
@@ -550,6 +554,7 @@ fn profile_with_author_and_db(
     starter_catalog_generation: Option<u8>,
 ) -> Arc<MobileProfile> {
     let (registry, registry_quarantined) = load_registry(db.as_ref());
+    let relay_registry = load_relay_registry(db.as_ref());
     Arc::new(MobileProfile {
         inner: Arc::new(Mutex::new(ProfileState::Active(Box::new(LocalProfile {
             store,
@@ -572,6 +577,7 @@ fn profile_with_author_and_db(
             starter_catalog_generation,
             prepared: None,
             db,
+            relay_registry,
             registry,
             community_authors: std::collections::HashMap::new(),
             community_generation: 0,
@@ -580,6 +586,27 @@ fn profile_with_author_and_db(
             registry_quarantined,
         })))),
     })
+}
+
+/// Loads relay records from durable local state. A malformed registry is
+/// quarantined before the profile continues with an empty list, matching the
+/// community registry's fail-safe persistence behavior.
+fn load_relay_registry(db: Option<&riot_core::store::RiotDatabase>) -> RelayRegistry {
+    let Some(db) = db else {
+        return RelayRegistry::default();
+    };
+    let Ok(Some(bytes)) = db.local_state(RELAY_REGISTRY_KEY) else {
+        return RelayRegistry::default();
+    };
+    match RelayRegistry::decode(&bytes) {
+        Ok(registry) => registry,
+        Err(_) => {
+            if matches!(db.local_state(RELAY_REGISTRY_QUARANTINE_KEY), Ok(None)) {
+                let _ = db.set_local_state(RELAY_REGISTRY_QUARANTINE_KEY, &bytes);
+            }
+            RelayRegistry::default()
+        }
+    }
 }
 
 /// Loads the persisted community registry from `local_state`. A blob that fails
@@ -2855,6 +2882,54 @@ pub(crate) fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError
             .map_err(map_database_error)?;
     }
     Ok(())
+}
+
+fn persist_relay_registry(profile: &LocalProfile) -> Result<(), MobileError> {
+    if let Some(db) = profile.db.as_ref() {
+        db.set_local_state(RELAY_REGISTRY_KEY, &profile.relay_registry.encode())
+            .map_err(map_database_error)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn add_relay(
+    inner: &Arc<Mutex<ProfileState>>,
+    relay: RelayRecord,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        parse_entry_id(&relay.node_id)?;
+        if relay.ticket_bytes.is_empty() {
+            return Err(MobileError::InvalidInput);
+        }
+        profile.relay_registry.upsert(relay);
+        persist_relay_registry(profile)
+    })
+}
+
+pub(crate) fn list_relays(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<RelayRecord>, MobileError> {
+    with_active(inner, |profile| Ok(profile.relay_registry.relays.clone()))
+}
+
+pub(crate) fn relay_for_next_pull(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Option<RelayRecord>, MobileError> {
+    with_active(inner, |profile| Ok(profile.relay_registry.next()))
+}
+
+#[cfg(feature = "net")]
+pub(crate) fn mark_relay_answered(
+    inner: &Arc<Mutex<ProfileState>>,
+    node_id: &str,
+    answered_at: u64,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        if !profile.relay_registry.mark_answered(node_id, answered_at) {
+            return Err(MobileError::InvalidInput);
+        }
+        persist_relay_registry(profile)
+    })
 }
 
 /// Register (or refresh the metadata of) the ACTIVE community from the current

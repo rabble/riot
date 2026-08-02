@@ -97,6 +97,8 @@ enum AnchorRelayFailure {
             return invalidBuiltInLink
         case .TicketMalformed:
             return invalidBuiltInLink
+        case .NoRelayConfigured:
+            return "Riot doesn’t have an internet relay configured yet. Nothing on your device changed."
         case .BadAnchorAddress:
             return "Riot’s built-in relay address is no longer valid. Update Riot to reconnect; nothing on your device changed."
         case .Import:
@@ -1368,8 +1370,6 @@ public final class RiotAppModel: ObservableObject {
         relaySyncError = nil
         defer { isRelaySyncing = false }
 
-        let nodeId = AnchorRelayDefaults.relayNodeId
-        let ticket = AnchorRelayDefaults.communityTicket
         let now = UInt64(Date().timeIntervalSince1970)
         // The DURABLE profile handle (Sendable), so the blocking network leg runs
         // off the main actor while importing into the PERSISTED store.
@@ -1380,10 +1380,8 @@ public final class RiotAppModel: ObservableObject {
         do {
             outcome = try await Task.detached {
                 let net = try bindNetRuntime()
-                return try net.syncWithAnchor(
+                return try net.syncWithNextRelay(
                     profile: durableProfile,
-                    anchorHint: nodeId,
-                    ticketBytes: ticket,
                     nowUnix: now
                 )
             }.value

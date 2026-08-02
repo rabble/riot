@@ -13,6 +13,17 @@ pub struct PublicSpace {
     pub is_public: bool,
 }
 
+/// A relay remembered by the durable profile. The NodeId is the stable relay
+/// identity used by iroh discovery; the ticket is the signed admission data
+/// needed for the next pull. The native UI may present its own name or label,
+/// but neither field needs to be shown to a person.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RelayRecord {
+    pub node_id: String,
+    pub ticket_bytes: Vec<u8>,
+    pub last_answered_unix_seconds: Option<u64>,
+}
+
 /// The verified result of parsing an `@author.<suffix>` handle. The
 /// `subspace_key_hex` is the 32-byte identity recovered from the suffix alone
 /// (self-certifying); `shortname` is the decorative human label.
@@ -529,6 +540,24 @@ impl MobileProfile {
 
     pub fn open_sync_session(&self) -> Result<Arc<MobileSyncSession>, MobileError> {
         crate::mobile_state::open_sync_session(&self.inner)
+    }
+
+    // --- Durable relay registry --------------------------------------------
+
+    /// Remember a relay for future non-local pulls. Re-adding the same NodeId
+    /// refreshes its ticket and moves it to the front of next-pull selection.
+    pub fn add_relay(&self, relay: RelayRecord) -> Result<(), MobileError> {
+        crate::mobile_state::add_relay(&self.inner, relay)
+    }
+
+    /// Returns remembered relays in next-pull order, newest first.
+    pub fn list_relays(&self) -> Result<Vec<RelayRecord>, MobileError> {
+        crate::mobile_state::list_relays(&self.inner)
+    }
+
+    /// Returns the relay the registered pull should use next, if any.
+    pub fn relay_for_next_pull(&self) -> Result<Option<RelayRecord>, MobileError> {
+        crate::mobile_state::relay_for_next_pull(&self.inner)
     }
 
     // --- Multiple communities (Unit 3) ---------------------------------------
