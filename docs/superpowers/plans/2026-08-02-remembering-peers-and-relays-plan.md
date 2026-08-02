@@ -61,6 +61,47 @@ never interprets. The core stores and returns bytes; the transport layer is the
 only thing that understands them. That keeps Willow free of iroh while giving
 the registry durability, cross-platform parity, and wipe for free.
 
+## Resolution, 2026-08-02: peering is the consent act
+
+Correcting the two revisions above. You do not remember an ADDRESS — iroh
+resolves a stable NodeId to a path through discovery and relays, exactly as Tor
+resolves an onion address. There is no routing state to keep. What you remember
+is a 32-byte identity.
+
+But `iroh.rs` makes followers **deliberately ephemeral** — "EPHEMERAL NodeId
+(§5.4), reducing cross-session linkability" — so remembering a phone means
+opting out of a privacy property that was chosen on purpose. Automatic peer
+memory would quietly build the correlation graph Riot exists to avoid.
+
+**Peering resolves it.** Two people explicitly become peers; that act is when
+NodeIds are exchanged, and it is what makes remembering legitimate rather than
+surveillance. It also answers the question left open by the 2026-07-23 transport
+decision ("peer-to-peer for known peers" — but how do known peers swap NodeIds).
+
+**Use a stable NodeId PER PEER, not one global stable NodeId.** A single stable
+identity is trackable by everyone who ever sees it; a fully ephemeral one is
+unreachable. A distinct stable key per friendship gives reachability to that
+friend and correlation to nobody. This is the same shape Riot already uses for
+records — per-community authors that are random and unlinkable by design —
+applied to transport instead.
+
+What this makes buildable, in order:
+
+1. **Relays and seeds first.** They have stable NodeIds by design, remembering
+   them carries no privacy cost, and today the relay is a compiled-in constant
+   with no way to add or persist another. This is the whole of the current gap
+   for "sync with a server again".
+2. **Peering second**, as an explicit flow: exchange, name each other, store the
+   per-peer key. Nothing is remembered without it.
+
+Open questions this does NOT settle, and they are design work, not coding:
+
+- how a peering act is performed (QR in person, over an existing community,
+  out of band)
+- whether a peer relationship is per-device or per-person across their devices
+- what unpeering means for records already exchanged (nothing can be recalled)
+- how iroh reaches a backgrounded phone at all — still open from 2026-07-23
+
 ## What "remembered" has to mean
 
 For a peer:
