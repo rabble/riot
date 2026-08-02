@@ -49,7 +49,9 @@ by a test that uses the real substrate, not a substitute.
 
 ## The cell that blocks the whole grid
 
-**Riot silently destroys a person's identity and community, repeatedly.**
+**Riot has destroyed a person's identity and community three times.** (Not a
+continuous loop — see the correction below. It fired on 25 and 31 July and has
+not fired since.)
 
 Evidence from a real machine on 2026-08-01, not a hypothesis:
 
@@ -92,24 +94,42 @@ appeared to have joined.
 - Not the core write path. In-memory readers, durable readers, and durable
   self-authored journeys all pass.
 
-### What is left, and how to settle it
+### CORRECTION, 2026-08-02: the key hypothesis is DISPROVEN
 
-The keychain item is **unchanged since 11 July** (`cdat == mdat`), and the key it
-holds still opens the 25 July identity. So the app is sealing with a key that is
-not the one the CLI can read, and that key does not survive to the next launch.
-Two candidates:
+Ran the diagnostic. Two consecutive launches of the current build:
 
-1. The sandboxed app resolves a **different keychain item** than the login-
-   keychain one (access-group scoping), and that item is not persisting.
-2. `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` is being applied in an
-   environment where the system later discards the item.
+```
+LAUNCH 1  wrapping key LOADED  fp=25666804
+LAUNCH 2  wrapping key LOADED  fp=25666804
+CLI key fingerprint            25666804
+quarantines                    0
+```
 
-**Settle it with one launch.** Log a non-reversible fingerprint (first 8 bytes of
-a SHA-256, never the key) at BOTH points: when a wrapping key is loaded or
-minted, and when a sealed identity is opened or written. If the seal fingerprint
-and the next-launch load fingerprint differ, it is (1) or (2) and the log says
-which. This is a diagnostic, not a fix, and it must not ship enabled by default
-if it costs anything at runtime.
+The wrapping key persists, is stable across launches, and is the same key the
+CLI reads. No quarantine occurred. **The app is healthy right now**, and the
+"permanent loop" framing in the previous revision of this plan was wrong.
+
+A sharper fact falls out of yesterday's data: the identity quarantined on
+**25 July opens fine with today's key**. It was never unopenable. So the
+recovery ladder blamed `profile-open` for something that was not the identity
+at all.
+
+The untested variable is the difference between the diagnostic and the real
+path:
+
+- diagnostic called `open_profile_from_sealed_identity` — no database
+- the app calls `open_profile_from_sealed_identity_WITH_DATABASE`
+
+so the failure is plausibly the SQLite open or the persisted replay, not the
+seal. The 25 July profile also carried `starterCatalogGeneration` ABSENT while
+the diagnostic passed `Some(2)`, which is a second untested difference.
+
+**Next:** run the with-database variant against the real quarantined database,
+identity, and that profile's actual generation. Three known-good inputs, one
+known-bad outcome — that isolates it.
+
+**Kept regardless:** the fingerprint logging. It costs nothing, and if this
+recurs the log now says immediately whether the key changed.
 
 ## Work units
 
