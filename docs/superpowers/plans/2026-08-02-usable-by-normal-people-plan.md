@@ -124,9 +124,35 @@ so the failure is plausibly the SQLite open or the persisted replay, not the
 seal. The 25 July profile also carried `starterCatalogGeneration` ABSENT while
 the diagnostic passed `Some(2)`, which is a second untested difference.
 
-**Next:** run the with-database variant against the real quarantined database,
-identity, and that profile's actual generation. Three known-good inputs, one
-known-bad outcome — that isolates it.
+**Ran it.** The database is NOT the variable:
+
+```
+jul25   gen=None      no_db=OK            with_db=OK
+jul31   gen=Some(2)   no_db=InvalidInput  with_db=InvalidInput
+jul31b  gen=Some(2)   no_db=OK            with_db=OK
+```
+
+**Two of the three quarantines were SPURIOUS.** The app threw away identities
+that open perfectly well under the current key. Only 31 July 03:25 was
+genuinely unopenable.
+
+That splits one suspected bug into two real ones:
+
+**Bug A — the keychain alternates between two keys.** Identities sealed under
+K1 open today; the one sealed under K2 does not. Each time the app is handed
+the other key, a good profile fails to open, is quarantined, and its
+replacement is sealed under whichever key it just got — arming the next
+failure. Consistent with every timestamp in `recovery.log`. The fingerprint
+logging now in place names this the moment it recurs.
+
+**Bug B — quarantine is destructive on a recoverable condition.** Even granting
+a transient key mismatch, discarding the profile is the wrong response: the
+identity was fine and the key came back. The ladder should retry, and should
+try previously quarantined identities before minting a stranger, rather than
+treating one failed open as proof the data is bad.
+
+Bug B is fixable without reproducing Bug A, and it is the one that actually
+costs people their community. Do it first.
 
 **Kept regardless:** the fingerprint logging. It costs nothing, and if this
 recurs the log now says immediately whether the key changed.
