@@ -2462,7 +2462,48 @@ fn advance_app_write_floor(
     Ok(())
 }
 
-pub(crate) fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
+/// Rebuilds `profile.sync_inventory` from the store for the active namespace.
+///
+/// Durable-only by construction: `signed_entries_in_namespace` returns `None` on
+/// a memory-backed store (the join drops cap/sig), and in that case there is no
+/// signed form to rebuild from, so this fails closed exactly as the old equality
+/// guard did rather than silently installing an empty inventory.
+fn rebuild_sync_inventory(
+    profile: &mut LocalProfile,
+    live_ids: &[riot_core::willow::EntryId],
+) -> Result<(), MobileError> {
+    let Some(space) = profile.space.as_ref() else {
+        return Err(MobileError::Internal);
+    };
+    let namespace_id = parse_entry_id(&space.namespace_id)?;
+    let signed = profile
+        .store
+        .signed_entries_in_namespace(&namespace_id)
+        .map_err(map_core_error)?
+        .ok_or(MobileError::Internal)?;
+    let mut rebuilt = signed;
+    rebuilt.retain(|entry| {
+        live_ids
+            .binary_search(&entry_id(&entry.entry_bytes))
+            .is_ok()
+    });
+    rebuilt.sort_unstable_by_key(|entry| entry_id(&entry.entry_bytes));
+    let rebuilt_ids: Vec<_> = rebuilt
+        .iter()
+        .map(|entry| entry_id(&entry.entry_bytes))
+        .collect();
+    // Fail closed if the store cannot produce exactly the live set: a partial
+    // rebuild would offer an incomplete or foreign view to a peer.
+    if rebuilt_ids != live_ids {
+        return Err(MobileError::Internal);
+    }
+    profile.sync_inventory = rebuilt;
+    Ok(())
+}
+
+pub(crate) fn ensure_complete_sync_inventory(
+    profile: &mut LocalProfile,
+) -> Result<(), MobileError> {
     let mut live_ids = active_namespace_live_ids(profile)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
@@ -2474,7 +2515,19 @@ pub(crate) fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(
         .map(|signed| entry_id(&signed.entry_bytes))
         .collect();
     if inventory_ids != live_ids {
-        return Err(MobileError::Internal);
+        // The inventory is a CACHE of the active namespace's live set, and it
+        // can legitimately fall behind: an anchor pull imports entries straight
+        // into the store without touching it. Treating that as fatal refused
+        // EVERY write into a pulled community forever — reads kept working, so
+        // it surfaced as "Reactions aren't available for this post" and "That
+        // reply was not accepted" with no way to recover short of rejoining.
+        //
+        // A cache that disagrees with its source is repaired, not fatal. Rebuild
+        // it from the store under exactly the discipline `install_sync_inventory`
+        // uses: take the signed entries the store holds and keep precisely the
+        // active namespace's live set — no more (would leak another community's
+        // records into an offer), no fewer (would offer an incomplete view).
+        rebuild_sync_inventory(profile, &live_ids)?;
     }
     let encoded = encode_bundle(&profile.sync_inventory).map_err(|_| MobileError::SessionLimit)?;
     if encoded.len() > MAX_SYNC_INVENTORY_BYTES {
