@@ -12,7 +12,7 @@ import SwiftUI
 /// drives the pull; the visible `AnchorRelaySyncCard` reads this too.
 public enum AnchorRelayDefaults {
     /// The deployed relay's stable NodeId (64 hex) — the whole dial hint.
-    public static let relayNodeId =
+    public static let bakedRelayNodeId =
         "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
 
     /// A root-signed ReadCommitted ticket (hex) for a community already committed
@@ -21,8 +21,33 @@ public enum AnchorRelayDefaults {
     /// relay; community root (W)
     /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
     /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
-    public static let communityTicketHex =
+    public static let bakedCommunityTicketHex =
         "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62b28f1a6ad8080f5840badb5fa31067a5c330ba16ca97fbedf1ba9201c981c5014175721ccb2af61c83723514116260ef952516d0fcc0b474455b0ac8a4dd3fa39c019c77848fed9e00"
+
+    /// Point a build at a DIFFERENT anchor — a developer's loopback
+    /// `demo_anchor` — instead of the deployed relay. `RIOT_ANCHOR_HINT` takes the
+    /// full `<id_hex>@<ip:port>,…` hint the FFI already parses (a bare `<id_hex>`
+    /// works too, but only where discovery can resolve it); `RIOT_ANCHOR_TICKET_HEX`
+    /// takes the matching root-signed ticket.
+    ///
+    /// BOTH or NEITHER. A local hint carrying the deployed relay's ticket dials a
+    /// host that never committed that site and is refused, which reads as a
+    /// transport failure rather than the misconfiguration it is.
+    static func resolvedRelay(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> (hint: String, ticketHex: String) {
+        guard let hint = environment["RIOT_ANCHOR_HINT"], !hint.isEmpty,
+              let ticketHex = environment["RIOT_ANCHOR_TICKET_HEX"], !ticketHex.isEmpty
+        else { return (bakedRelayNodeId, bakedCommunityTicketHex) }
+        return (hint, ticketHex)
+    }
+
+    /// The relay this build actually dials — the baked deployed relay unless
+    /// overridden.
+    public static var relayNodeId: String { resolvedRelay().hint }
+
+    /// The ticket this build actually presents.
+    public static var communityTicketHex: String { resolvedRelay().ticketHex }
 
     /// A human name for the built-in community, shown when its own signed
     /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
