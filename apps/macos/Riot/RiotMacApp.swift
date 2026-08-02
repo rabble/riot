@@ -17,7 +17,15 @@ struct RiotMacApp: App {
                     // sync/reply work, so the Rust spans forward to the unified
                     // log (Console.app / `log stream`). Idempotent: safe across
                     // re-entrant launches. See riot-ffi logging::init_app_logging.
+                    // Debug builds run at .debug: an `.info` floor hid every
+                    // core-side step marker on the write path, so a week of
+                    // "reactions don't work" had nothing to read. Release stays
+                    // at .info.
+                    #if DEBUG
+                    initLogging(level: .debug)
+                    #else
                     initLogging(level: .info)
+                    #endif
                     bootstrap()
                 }
                 // Riot's identity is the warm cream/newsprint zine look — a

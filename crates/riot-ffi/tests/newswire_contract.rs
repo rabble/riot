@@ -1519,3 +1519,104 @@ fn a_relaunch_that_rejoins_its_persisted_space_can_still_react() {
         reply.err()
     );
 }
+
+// --- The store-size ceiling: writes die as a community FILLS UP ------------
+//
+// `EvidenceStore::persist` estimates its WAL cost from `mutation.live`, which is
+// the WHOLE live set after the join (`live: next_join.live_records()`), not the
+// delta being written. So the estimate grows with the size of the community,
+// and once it crosses `checkpoint_hard_pages` (1024) `admit_write` answers
+// `BusyRetryable` -> `SessionError::StalePreview` -> `MobileError::Internal` ->
+// "Reactions aren't available for this post."
+//
+// Nothing about the reaction is wrong. The community is simply too big, and it
+// gets worse with every post that syncs in — a device that worked yesterday
+// stops writing today, permanently, with no message that says so.
+
+/// Fills a durable community with `posts` reports carried from another author,
+/// then answers whether a reaction into it is still accepted.
+fn reaction_into_a_durable_community_of(posts: usize) -> Result<(), riot_ffi::MobileError> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("capacity.db").to_string_lossy().to_string();
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    let reader = open_local_profile_with_database(db_path).expect("durable reader profile");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            vec![5u8; 32],
+        )
+        .expect("join community");
+    carry(&reader, space.signed_bytes.clone());
+
+    let mut first_post = None;
+    for index in 0..posts {
+        // The AUTHOR hits the ceiling first — its own sync inventory fills at
+        // MAX_SYNC_IDS — so this error is part of what the test measures and
+        // must not be unwrapped away.
+        let post = author.create_newswire_post(post_input(
+            &space.entry_id,
+            &format!("Report number {index} from the open wire"),
+        ))?;
+        carry(&reader, post.signed_bytes.clone());
+        if first_post.is_none() {
+            first_post = Some(post.entry_id);
+        }
+    }
+
+    reader
+        .toggle_newswire_reaction(
+            space.entry_id,
+            first_post.expect("at least one post"),
+            "solidarity".into(),
+            true,
+        )
+        .map(|_| ())
+}
+
+/// A community with an ordinary amount of content in it must stay writable.
+/// Rabble's own device held 44 live entries when every reaction started coming
+/// back "Reactions aren't available for this post."
+#[test]
+fn a_durable_community_with_forty_reports_is_still_writable() {
+    assert!(
+        reaction_into_a_durable_community_of(40).is_ok(),
+        "a 40-report community must still accept a reaction"
+    );
+}
+
+/// The wall a growing community hits next. `MAX_SYNC_IDS` is 64, so a
+/// community physically cannot hold more than 64 live entries — and the sync
+/// inventory refuses before the store does. This test does not endorse that
+/// number; it pins it, so the limit is a decision someone made rather than a
+/// surprise a city runs into mid-protest. When it is raised, this test is the
+/// thing that says so out loud.
+#[test]
+fn the_sync_inventory_ceiling_is_sixty_four_live_entries() {
+    assert_eq!(
+        riot_core::sync::MAX_SYNC_IDS,
+        64,
+        "raising this ceiling is a wire-format decision, not a tuning tweak"
+    );
+    assert!(
+        matches!(
+            reaction_into_a_durable_community_of(80),
+            Err(riot_ffi::MobileError::SessionLimit)
+        ),
+        "past the ceiling a community must refuse with a CAPACITY error, which \
+         the app renders as \"can\u{2019}t hold another reaction right now\" — never \
+         as the authority-or-input bucket that says reactions are unavailable"
+    );
+}

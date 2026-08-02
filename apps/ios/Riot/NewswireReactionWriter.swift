@@ -219,6 +219,16 @@ public actor MobileProfileReactionWriter: NewswireReactionWriting {
                 kind: kind.rawValue,
                 active: active)
         } catch {
+            // DEBUG ONLY. `ReactionFailure` deliberately collapses `Internal`,
+            // `InvalidInput`, `StalePreview` and `AppRejected` into ONE bucket
+            // with one string — correct for a shipped build, useless for a
+            // developer, because those four have entirely different causes and
+            // the person sees identical copy for all of them. Write the real
+            // variant down before it is thrown away.
+            #if DEBUG
+            Logger(subsystem: "net.protest.riot", category: "newswire-reaction")
+                .error("toggleNewswireReaction RAW: \(String(describing: error), privacy: .public)")
+            #endif
             return .rejected(ReactionFailure(error))
         }
 
