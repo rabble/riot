@@ -5,7 +5,49 @@
 **Rule for this plan:** every fix lands red/green. No fix without a test that
 failed first.
 
-## The one that stops everything else
+
+## What the app is actually for
+
+Riot exists to let a group **write things down, read them, add to each other's
+work, carry it to other people, and come back to all of it later** — across many
+uses of the app, on more than one device, by more than one person.
+
+That sentence is the specification. Everything below is a cell in it, and a cell
+is only real when a test walks it end to end. The bugs in this plan are not
+independent defects; they are the cells where that loop breaks.
+
+### The grid
+
+Rows are what a person does. Columns are how far the data has to travel to still
+count. `✅` has a journey test that walks it; `⚠️` is partially covered or
+covered only against a substitute; `❌` has nothing.
+
+| | same session | after relaunch | after upgrade | to a person in the room | to a person elsewhere |
+|---|---|---|---|---|---|
+| create a community | ✅ | ✅ | ❌ | ⚠️ | ❌ unbuilt |
+| post an update | ✅ | ✅ | ❌ | ⚠️ | ❌ unbuilt |
+| reply to someone | ✅ | ✅ | ❌ | ❌ | ❌ unbuilt |
+| react to a post | ✅ | ✅ | ❌ | ❌ | ❌ unbuilt |
+| join by link / QR | ✅ | ❌ | ❌ | ⚠️ | ❌ unbuilt |
+| join from a relay pull | ❌ | ❌ | ❌ | — | ⚠️ pull only |
+| edit or retract | ❌ | ❌ | ❌ | ❌ | ❌ unbuilt |
+| carry a tool / app | ⚠️ | ⚠️ | ❌ | ⚠️ | ❌ unbuilt |
+| follow another site | ⚠️ | ❌ | ❌ | ❌ | ❌ unbuilt |
+
+Two things this makes plain that a bug list does not:
+
+1. **The "after relaunch" column is a lie in the field.** Those `✅`s pass
+   against a *stable test-double key store*. On a real device the identity does
+   not survive, so every one of those cells is actually broken for a real person.
+   A green column that disagrees with the product is worse than a red one.
+2. **The right-hand column is nearly empty**, and it is the reason people would
+   use this at all. Collaboration between people who are not in the same room is
+   the product, and it does not exist (issue #107).
+
+The definition of done for this plan is that grid, filled in — each cell walked
+by a test that uses the real substrate, not a substitute.
+
+## The cell that blocks the whole grid
 
 **Riot silently destroys a person's identity and community, repeatedly.**
 
@@ -71,7 +113,7 @@ if it costs anything at runtime.
 
 ## Work units
 
-### WU-1 — Identity survives, always. **Blocks everything.**
+### WU-1 — The relaunch column becomes true. **Blocks the whole grid.**
 
 1. **Red:** a durable journey that opens a profile, closes it, and reopens it,
    asserting the author id is unchanged and `recovery` is nil. *(This already
@@ -91,14 +133,14 @@ if it costs anything at runtime.
 **Done when:** a profile written by one launch always opens in the next, on a
 real device, with the real keychain — and existing broken profiles recover.
 
-### WU-2 — Prove one full journey on a real device
+### WU-2 — Walk one full row on real devices
 
 Install → join a community → post → reply → react → quit → relaunch → all of it
 is still there. Written down with evidence, on both iOS and Android. Right now
 nobody has seen a reply succeed in the running app; until that is recorded,
 "post and discuss" is unproven.
 
-### WU-3 — Close the test substrate gap
+### WU-3 — Fill the grid, on the real substrate
 
 The suites are green while the app is broken because they replace exactly what
 breaks: `open_local_profile()` is in-memory, the Swift tests pass no
