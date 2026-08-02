@@ -47,6 +47,36 @@ Two things this makes plain that a bug list does not:
 The definition of done for this plan is that grid, filled in — each cell walked
 by a test that uses the real substrate, not a substitute.
 
+## CORRECTION 2026-08-02 (second): this was largely a dev-machine artifact
+
+The "two keys" are two CODE SIGNATURES. macOS scopes keychain access by an
+app's signing identity, and this session alternated between:
+
+  Developer ID Application: Verse Communications, Inc.   (the notarized DMG)
+  ad-hoc / Apple Development                             (the Xcode Debug build)
+
+Different signature, different keychain access, different key — so a profile
+sealed by one build cannot be opened by the other. That is the whole mechanism.
+It is not a defect in the app; it is what happens when you swap builds on a
+development machine, which is exactly what 25 and 31 July look like.
+
+**A person who installs one signed build and keeps using it should never hit
+this.** The identity-loss investigation below was therefore chasing an artifact,
+and identity survival is NOT the blocker this plan opened by claiming.
+
+What survives the correction and is still worth doing:
+
+- **Bug B stands on its own.** Quarantine destroys a profile on a condition that
+  is recoverable, and two of three real quarantines discarded openable
+  identities. Whatever the trigger, "one failed open" must not mean "throw the
+  person's community away". Cheap, red/green, real.
+- **The fingerprint logging stays.** It is what turned this from speculation
+  into one command.
+- **Do not re-open this without evidence from a SINGLE signed build across an
+  upgrade.** That is the only configuration a real user is in.
+
+The real work is the grid, and specifically its right-hand column.
+
 ## The cell that blocks the whole grid
 
 **Riot has destroyed a person's identity and community three times.** (Not a
