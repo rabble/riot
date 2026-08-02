@@ -853,8 +853,14 @@ fn join_community_impl(
             is_public: true,
         };
 
-        // Re-selecting the already-active community is idempotent.
+        // Re-selecting the already-active community is idempotent — but this is
+        // ALSO the path a relaunch takes: iOS restores its persisted space by
+        // re-joining it, and the registry it reopened already lists that
+        // community as active. Recover the session-scoped half (author, active
+        // space, projection, sync inventory) before returning, or the app comes
+        // back readable and unable to write into its own community.
         if profile.registry.active == Some(namespace_id) {
+            recover_active_community_session(profile, &namespace_id, key.as_deref())?;
             return Ok(joined);
         }
 
@@ -906,11 +912,42 @@ fn join_community_impl(
         bump_app_execution_generation(profile);
         profile.community_generation = profile.community_generation.wrapping_add(1);
         register_active_community(profile, descriptor_entry_id)?;
+        // Seal the INCOMING author into its own row too, not just the outgoing
+        // one. Sealing only on the way out means the author of the community you
+        // are actually IN exists solely in RAM: quit the app and the identity you
+        // post with is gone, the next launch mints an unrelated one, and every
+        // write into that community fails `require_*_authority` while reads keep
+        // working — which the UI reports as "Reactions aren't available for this
+        // post." Keyless profiles keep the old behavior (nothing to seal with).
+        seal_active_author(profile, namespace_id, key.as_deref())?;
         reproject_active(profile)?;
         Ok(joined)
     });
     wrapping_key.zeroize();
     result
+}
+
+/// Seals the CURRENTLY ACTIVE author into its own registry row and persists it,
+/// so the identity survives a relaunch. Unlike `seal_or_park_outgoing` the
+/// author is not being handed away, so it stays live in `profile.author`; only
+/// a copy of its sealed bytes is stored. A seal failure (entropy) is left to the
+/// caller's existing behavior — the session continues with a usable author.
+fn seal_active_author(
+    profile: &mut LocalProfile,
+    namespace_id: [u8; 32],
+    key: Option<&[u8; 32]>,
+) -> Result<(), MobileError> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+    let Ok(sealed) = profile.author.seal_identity(key) else {
+        return Ok(());
+    };
+    let Some(record) = profile.registry.find_mut(&namespace_id) else {
+        return Ok(());
+    };
+    record.sealed_author = Some(sealed);
+    persist_registry(profile)
 }
 
 /// The title the seeded demo space is listed under. A bundle carries signed
@@ -3371,6 +3408,100 @@ pub(crate) fn active_community(
     })
 }
 
+/// True when `profile.author` is bound to `namespace_id`. Every newswire write
+/// checks exactly this — `require_reaction_authority` and its post/comment/
+/// editorial siblings compare the author's namespace against the descriptor's —
+/// so an unbound author turns every write into `AuthorityInvalid`, which reaches
+/// Swift as `InvalidInput` and renders as "Reactions aren't available for this
+/// post." A read never checks it, which is why the app looks half-alive.
+fn author_is_bound_to(profile: &LocalProfile, namespace_id: &[u8; 32]) -> bool {
+    profile.author.namespace_id().as_bytes() == namespace_id
+}
+
+/// Rebuilds the active namespace's `sync_inventory` from the durable store.
+///
+/// The inventory is session state that no open path restores, so after a
+/// relaunch it is empty while the store still holds every entry — and
+/// `ensure_complete_sync_inventory` refuses every write on `[] != live_ids`.
+/// The signed bytes are read back VERBATIM from the store (never re-encoded),
+/// and `install_sync_inventory` re-applies the same exact-equality guard a sync
+/// offer must satisfy, so this cannot widen what a peer is offered.
+///
+/// A memory-backed store keeps no signed form, so there is nothing to rebuild
+/// and nothing to fix: those profiles populate the inventory in-session.
+fn rehydrate_sync_inventory(
+    profile: &mut LocalProfile,
+    namespace_id: &[u8; 32],
+) -> Result<(), MobileError> {
+    if profile.db.is_none() || !profile.sync_inventory.is_empty() {
+        return Ok(());
+    }
+    if namespace_live_ids(profile, namespace_id)?.is_empty() {
+        return Ok(());
+    }
+    let offer = build_followed_site_offer(profile, namespace_id)?;
+    install_sync_inventory(profile, offer)
+}
+
+/// Restores the session-scoped half of an ALREADY-active community: the author
+/// bound to it, the active `space` scoping, its projection, and its sync
+/// inventory. Called only on the re-select path, where a relaunch arrives with
+/// durable registry state and nothing else.
+///
+/// Deliberately does not bump the community generation or seal an outgoing
+/// author: the community is not changing, so no handle becomes stale and there
+/// is no outgoing identity worth keeping.
+fn recover_active_community_session(
+    profile: &mut LocalProfile,
+    target_ns: &[u8; 32],
+    key: Option<&[u8; 32]>,
+) -> Result<(), MobileError> {
+    if !author_is_bound_to(profile, target_ns) {
+        let sealed = key.and_then(|_| {
+            profile
+                .registry
+                .find(target_ns)
+                .and_then(|record| record.sealed_author.clone())
+        });
+        if let (Some(sealed), Some(key)) = (sealed, key) {
+            // A failed unseal is NOT fatal here: the community stays selected and
+            // readable, and the chooser's existing recovery (an explicit switch)
+            // still retries it. Failing the launch-time re-select would brick the
+            // app on a community it can perfectly well render.
+            if let Ok(author) = EvidenceAuthor::open_sealed_identity(key, &sealed) {
+                profile.author = author;
+                profile.community_authors.remove(target_ns);
+                if let Some(record) = profile.registry.find_mut(target_ns) {
+                    record.quarantined = false;
+                }
+            }
+        } else if let Some(author) = profile.community_authors.remove(target_ns) {
+            profile.author = author;
+        }
+    }
+
+    // Scope the session to this namespace BEFORE any inventory work: with
+    // `space == None`, `active_namespace_live_ids` falls back to the WHOLE
+    // store, which on a multi-community device would widen the inventory past
+    // this namespace.
+    if profile.space.is_none() {
+        let record = profile
+            .registry
+            .find(target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        profile.space = Some(PublicSpace {
+            namespace_id: hex(target_ns),
+            title: record.title.clone(),
+            is_public: true,
+        });
+        profile.joined_others_space = !is_space_organizer(profile);
+        reproject_active(profile)?;
+        refresh_app_trust_markers(profile)?;
+    }
+
+    rehydrate_sync_inventory(profile, target_ns)
+}
+
 pub(crate) fn switch_community(
     inner: &Arc<Mutex<ProfileState>>,
     namespace_id: String,
@@ -3382,7 +3513,18 @@ pub(crate) fn switch_community(
 
         // Re-selecting the active community is a no-op: no cancellation, no
         // generation bump, so in-flight work is not disturbed.
+        //
+        // A RELAUNCH lands here. `registry.active` is durable, but the author,
+        // the active `space`, and the sync inventory are all session-scoped and
+        // come back empty — so the app reopens its database, calls this with the
+        // community the registry already lists, gets a clean no-op, and then
+        // fails EVERY newswire write while reads keep working. Restore the
+        // session-scoped half before returning; it is a recovery, not a switch,
+        // so no generation bump and no outgoing seal (the outgoing author here
+        // IS the freshly opened one, and sealing it would overwrite the
+        // community's real sealed author).
         if profile.registry.active == Some(target_ns) {
+            recover_active_community_session(profile, &target_ns, Some(&key))?;
             let record = profile
                 .registry
                 .find(&target_ns)
@@ -3514,6 +3656,12 @@ pub(crate) fn switch_community(
             .community_sync_inventory
             .remove(&target_ns)
             .unwrap_or_default();
+        // Nothing parked means either a freshly loaded community (empty store
+        // side too, so this is a no-op) or a community whose content was
+        // imported in an EARLIER session — on a durable profile the signed
+        // bytes are still there and the inventory is rebuilt from them rather
+        // than left empty, which would refuse every write into it.
+        rehydrate_sync_inventory(profile, &target_ns)?;
         refresh_app_trust_markers(profile)?;
         persist_registry(profile)?;
 

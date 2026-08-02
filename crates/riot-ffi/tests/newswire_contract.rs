@@ -1336,3 +1336,186 @@ fn writing_into_a_community_whose_descriptor_has_not_arrived_fails_honestly() {
          which is neither true nor actionable. Got {error:?}"
     );
 }
+
+// --- RELAUNCH. The one configuration no test ever covered --------------------
+//
+// Every durable test above builds the community and writes into it inside a
+// SINGLE profile lifetime, which is the only lifetime in which
+// `profile.sync_inventory` is populated — it lives in memory and is never
+// persisted or rebuilt from the store. A real person quits the app. On the next
+// launch the store still holds every entry and the registry still lists the
+// community, but the inventory comes back EMPTY, so
+// `ensure_complete_sync_inventory` sees `[] != live_ids` and refuses every
+// newswire write with `Internal`, which Swift renders as "Reactions aren't
+// available for this post." Reads keep working, which is why this looks like an
+// authority bug instead of a lost session field.
+
+#[test]
+fn a_durable_reader_can_still_react_after_the_app_is_relaunched() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("relaunch.db").to_string_lossy().to_string();
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    // First launch: join, receive the community over sync, react successfully.
+    {
+        let reader =
+            open_local_profile_with_database(db_path.clone()).expect("durable reader profile");
+        reader
+            .join_newswire_community(
+                riot_ffi::PublicSpace {
+                    namespace_id: reference.namespace_id.clone(),
+                    title: "River City Wire".into(),
+                    is_public: true,
+                },
+                reference.descriptor_entry_id.clone(),
+                vec![7u8; 32],
+            )
+            .expect("join community");
+        carry(&reader, space.signed_bytes.clone());
+        carry(&reader, post.signed_bytes.clone());
+        reader
+            .toggle_newswire_reaction(
+                space.entry_id.clone(),
+                post.entry_id.clone(),
+                "solidarity".into(),
+                true,
+            )
+            .expect("react during the first launch");
+        drop(reader);
+    }
+
+    // Second launch: same database, same store, same registry.
+    let reader =
+        riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(db_path, None)
+            .expect("reopen durable profile");
+    // The registry is durable, so the community the app reopens into is ALREADY
+    // active: this call takes the re-select path, which is the whole point.
+    assert_eq!(
+        reader
+            .active_community()
+            .expect("active community")
+            .map(|row| row.namespace_id),
+        Some(reference.namespace_id.clone()),
+        "the relaunched profile must reopen into the community it left"
+    );
+    reader
+        .switch_community(reference.namespace_id.clone(), vec![7u8; 32])
+        .expect("switch to the community the registry already lists");
+
+    let projection = reader
+        .project_newswire_space(space.entry_id.clone())
+        .expect("the community still reads after relaunch");
+    assert!(
+        !projection.open_wire.is_empty(),
+        "the post must still be readable after relaunch"
+    );
+
+    let reaction =
+        reader.toggle_newswire_reaction(space.entry_id, post.entry_id, "important".into(), true);
+    assert!(
+        reaction.is_ok(),
+        "a reaction must survive an app relaunch — the store and the registry \
+         both persist, so the session-only sync inventory must be rebuilt from \
+         them rather than refusing every write. Got {:?}",
+        reaction.err()
+    );
+}
+
+/// The RELAUNCH PATH THE APP ACTUALLY TAKES. iOS/macOS do not call
+/// `switch_community` on launch — `ProfileRepository.restoreSpace` re-joins the
+/// persisted space with `join_public_space`, which lands on its own
+/// already-active idempotent early return. A fix that only covered
+/// `switch_community` would leave every shipped build exactly as broken.
+#[test]
+fn a_relaunch_that_rejoins_its_persisted_space_can_still_react() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("rejoin.db").to_string_lossy().to_string();
+    let key = vec![9u8; 32];
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    {
+        let reader =
+            open_local_profile_with_database(db_path.clone()).expect("durable reader profile");
+        reader
+            .join_newswire_community(
+                riot_ffi::PublicSpace {
+                    namespace_id: reference.namespace_id.clone(),
+                    title: "River City Wire".into(),
+                    is_public: true,
+                },
+                reference.descriptor_entry_id.clone(),
+                key.clone(),
+            )
+            .expect("join community");
+        carry(&reader, space.signed_bytes.clone());
+        carry(&reader, post.signed_bytes.clone());
+        reader
+            .toggle_newswire_reaction(
+                space.entry_id.clone(),
+                post.entry_id.clone(),
+                "solidarity".into(),
+                true,
+            )
+            .expect("react during the first launch");
+        drop(reader);
+    }
+
+    let reader =
+        riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(db_path, None)
+            .expect("reopen durable profile");
+    // Exactly what `restoreSpace` does on launch.
+    reader
+        .join_public_space(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            key,
+        )
+        .expect("rejoin the persisted space");
+
+    let reaction = reader.toggle_newswire_reaction(
+        space.entry_id.clone(),
+        post.entry_id.clone(),
+        "important".into(),
+        true,
+    );
+    assert!(
+        reaction.is_ok(),
+        "the app's own relaunch path must leave the community writable, got {:?}",
+        reaction.err()
+    );
+
+    let reply = reader.create_newswire_comment(
+        space.entry_id,
+        post.entry_id,
+        "I can bring bread.".into(),
+        "en".into(),
+    );
+    assert!(
+        reply.is_ok(),
+        "replies must survive the relaunch too, got {:?}",
+        reply.err()
+    );
+}
