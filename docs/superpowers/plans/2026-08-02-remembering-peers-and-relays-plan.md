@@ -26,6 +26,41 @@ one was written down:
 (2) has nothing to dial without (1). And (1) needs no new crypto and no protocol
 design: a persisted record, an FFI surface, a screen.
 
+## Design finding, 2026-08-02: "peer" means two different things
+
+`SyncOutcome` carries no peer identity — only `kind`, `entries`,
+`rejection_code`, `terminal`, `import_bundle_bytes`. The core does not have a
+concept of "who I just exchanged with", and that is not an oversight:
+
+- **People** are already remembered. Every signed entry carries its author, the
+  store keeps them, and the People screen is built from exactly that. Riot does
+  NOT need a new record to remember humans.
+- **Devices** are what is forgotten. How to reach a phone again — a NodeId, a
+  BLE identifier, a last-known local address — is TRANSPORT state. It lives in
+  `AndroidNearbyController` / `NearbyTransportController`, above the core, and
+  it is discarded when the session ends.
+
+So the thing to build is a **reachability registry**, not a people registry, and
+the naming in the rest of this plan should be read that way. It answers "how do
+I get back to that device", and it is keyed by the transport identity, with the
+Willow authors we learned from that exchange recorded alongside so a person sees
+a name rather than a hex string.
+
+**Where it belongs is a real decision, not a detail:**
+
+- *In the core*, as a persisted record: survives with the profile, works the
+  same on both platforms, participates in emergency wipe automatically. But the
+  core currently has no transport concepts at all, and pushing NodeIds into it
+  couples Willow storage to iroh/BLE addressing.
+- *In the native layer*, beside the profile: keeps the core transport-free, but
+  must be written twice (Swift and Kotlin), and must be wired into wipe by hand
+  on both.
+
+Recommendation: **core**, as an opaque `reachability_hint: Vec<u8>` the core
+never interprets. The core stores and returns bytes; the transport layer is the
+only thing that understands them. That keeps Willow free of iroh while giving
+the registry durability, cross-platform parity, and wipe for free.
+
 ## What "remembered" has to mean
 
 For a peer:
