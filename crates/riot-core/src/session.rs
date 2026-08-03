@@ -580,7 +580,7 @@ impl EvidenceStore {
             retained_receipt_charge_bytes: store.retained_receipt_charge_bytes,
             accepted: Vec::new(),
             live: next_join.live_records(),
-            forgotten: next_join.forgotten_ids().to_vec(),
+            forgotten: next_join.forgotten_ids(),
             receipt: None,
             disposition_namespaces: Vec::new(),
         };
@@ -1402,7 +1402,7 @@ impl ImportPlan {
             retained_receipt_charge_bytes,
             accepted,
             live: join_plan.next.live_records(),
-            forgotten: join_plan.next.forgotten_ids().to_vec(),
+            forgotten: join_plan.next.forgotten_ids(),
             receipt: Some(receipt.clone()),
             disposition_namespaces,
         };
