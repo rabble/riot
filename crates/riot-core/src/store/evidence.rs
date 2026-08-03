@@ -1488,6 +1488,41 @@ fn replay_final_live(
     accepted: &BTreeMap<AcceptedKey, AcceptedInfo>,
 ) -> Result<BTreeSet<AcceptedKey>, super::DatabaseError> {
     let union = pre_live.union(batch).copied().collect::<BTreeSet<_>>();
+
+    // ANCESTOR-SCOPED, NOT ALL-PAIRS.
+    //
+    // This was `union.iter()` nested inside `union.iter()` — every entry tested
+    // against every other entry — called once per import receipt, so profile
+    // open was quadratic in store size and linear in receipts on top. Measured
+    // at 1000 entries it was 635 ms of an 809 ms open (78%), against 47 ms for
+    // all the signature verification put together.
+    //
+    // Almost every one of those comparisons was decidably false before it ran.
+    // Prefix pruning (willow25 `entry/entrylike.rs:314-319`) says `e1` prunes
+    // `e2` ONLY when the namespace ids match, the subspace ids match, `e1`'s
+    // path is a prefix of `e2`'s, and `e1` is newer. So a candidate's only
+    // possible pruners are entries at one of its own path PREFIXES, by the same
+    // author, in the same namespace — at most `component_count() + 1` paths,
+    // and Riot's newswire paths are ~6 components deep. Two posts, which sit at
+    // sibling paths of equal depth, can never prune one another however many of
+    // them there are.
+    //
+    // The `prunes` predicate itself is unchanged and still decides every
+    // surviving pair. All that changed is which pairs are offered to it: the
+    // ones skipped are exactly those where a prefix relation is impossible, so
+    // the resulting live set is identical.
+    let mut by_path: std::collections::HashMap<PruneBucket, Vec<AcceptedKey>> =
+        std::collections::HashMap::new();
+    for key in &union {
+        let Some(info) = accepted.get(key) else {
+            return Err(super::DatabaseError::CorruptDatabase);
+        };
+        by_path
+            .entry(prune_bucket(&info.entry))
+            .or_default()
+            .push(*key);
+    }
+
     union
         .iter()
         .filter_map(|candidate_key| {
@@ -1495,15 +1530,50 @@ fn replay_final_live(
                 Some(info) => &info.entry,
                 None => return Some(Err(super::DatabaseError::CorruptDatabase)),
             };
-            let dominated = union.iter().any(|other_key| {
-                other_key != candidate_key
-                    && accepted
-                        .get(other_key)
-                        .is_some_and(|other| other.entry.prunes(candidate))
+            let namespace = *candidate.namespace_id().as_bytes();
+            let subspace = *candidate.subspace_id().as_bytes();
+            let components: Vec<Vec<u8>> = candidate
+                .path()
+                .components()
+                .map(|component| component.to_vec())
+                .collect();
+
+            // Every prefix of the candidate's path, shortest first, including
+            // the full path (an equal path is a prefix of itself, and a newer
+            // entry at the same path prunes an older one).
+            let dominated = (0..=components.len()).any(|depth| {
+                let bucket = (namespace, subspace, components[..depth].to_vec());
+                by_path.get(&bucket).is_some_and(|keys| {
+                    keys.iter().any(|other_key| {
+                        other_key != candidate_key
+                            && accepted
+                                .get(other_key)
+                                .is_some_and(|other| other.entry.prunes(candidate))
+                    })
+                })
             });
             (!dominated).then_some(Ok(*candidate_key))
         })
         .collect()
+}
+
+/// The bucket an entry can prune within: prefix pruning requires an identical
+/// namespace and subspace, so entries in different buckets can never dominate
+/// one another regardless of their paths.
+#[cfg(feature = "sqlite")]
+type PruneBucket = ([u8; 32], [u8; 32], Vec<Vec<u8>>);
+
+#[cfg(feature = "sqlite")]
+fn prune_bucket(entry: &crate::willow::Entry) -> PruneBucket {
+    (
+        *entry.namespace_id().as_bytes(),
+        *entry.subspace_id().as_bytes(),
+        entry
+            .path()
+            .components()
+            .map(|component| component.to_vec())
+            .collect(),
+    )
 }
 
 #[cfg(feature = "sqlite")]

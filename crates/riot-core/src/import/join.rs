@@ -19,9 +19,11 @@
 //! disposition are derived from (pre-state ∪ batch) as one set, never from
 //! sequential intermediate states.
 
+use std::collections::BTreeMap;
+
 use willow25::authorisation::AuthorisedEntry;
 use willow25::entry::EntrylikeExt;
-use willow25::groupings::Keylike;
+use willow25::groupings::{Keylike, Namespaced};
 
 use crate::willow::{encode_entry, entry_id, Entry, EntryId};
 
@@ -80,6 +82,24 @@ impl Stored {
     fn prunes(&self, other: &Stored) -> bool {
         self.entry.prunes(&other.entry)
     }
+}
+
+/// The bucket an entry can prune within: prefix pruning requires an identical
+/// namespace and subspace, so entries in different buckets can never dominate
+/// one another regardless of their paths.
+type PruneBucket = ([u8; 32], [u8; 32], Vec<Vec<u8>>);
+
+fn prune_bucket(stored: &Stored) -> PruneBucket {
+    (
+        *stored.entry.namespace_id().as_bytes(),
+        *stored.entry.subspace_id().as_bytes(),
+        stored
+            .entry
+            .path()
+            .components()
+            .map(|component| component.to_vec())
+            .collect(),
+    )
 }
 
 /// A live entry matched by a path-prefix query: canonical id, the entry,
@@ -217,12 +237,45 @@ pub fn plan_join_with_payloads(
         }
     }
 
+    // ANCESTOR-SCOPED, NOT ALL-PAIRS — the write-path twin of the same fix in
+    // `store::evidence::replay_final_live`.
+    //
+    // This ran on EVERY write, testing every live entry against every other, so
+    // the cost of a single reaction grew with the size of the community and is
+    // the reason `MAX_STORE_ENTRIES` is 1024. Prefix pruning requires an
+    // identical namespace and subspace and a path-prefix relation, so a
+    // candidate's only possible pruners sit at one of its own path prefixes by
+    // the same author. Sibling entries of equal depth — every post in a
+    // newswire — can never prune each other, however many there are.
+    //
+    // `prunes` still decides every pair it is given; only the provably-false
+    // pairs are skipped, so the resulting live set is unchanged.
+    let mut by_path: BTreeMap<PruneBucket, Vec<usize>> = BTreeMap::new();
+    for (index, stored) in union.iter().enumerate() {
+        by_path.entry(prune_bucket(stored)).or_default().push(index);
+    }
+
     let final_live: Vec<Stored> = union
         .iter()
-        .filter(|e| {
-            !union
-                .iter()
-                .any(|other| other.id != e.id && other.prunes(e))
+        .filter(|candidate| {
+            let namespace = *candidate.entry.namespace_id().as_bytes();
+            let subspace = *candidate.entry.subspace_id().as_bytes();
+            let components: Vec<Vec<u8>> = candidate
+                .entry
+                .path()
+                .components()
+                .map(|component| component.to_vec())
+                .collect();
+            let dominated = (0..=components.len()).any(|depth| {
+                let bucket = (namespace, subspace, components[..depth].to_vec());
+                by_path.get(&bucket).is_some_and(|indices| {
+                    indices.iter().any(|index| {
+                        let other = &union[*index];
+                        other.id != candidate.id && other.prunes(candidate)
+                    })
+                })
+            });
+            !dominated
         })
         .cloned()
         .collect();
