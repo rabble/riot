@@ -1300,6 +1300,14 @@ public final class NewswireSurfaceModel: ObservableObject {
                 disabledReactionKeys.insert(key)
             case .retryablePersistence:
                 break
+            case .internalFault:
+                // Deliberately does NOT disable the row either. Riot broke;
+                // the post is fine and so is the person's authority over it.
+                // Greying the control out would turn our bug into their
+                // apparent permissions problem — which is exactly how a
+                // StalePreview spent a week looking like a moderation
+                // decision.
+                break
             case .communityNotSynced:
                 // Deliberately does NOT disable the row. The community is
                 // simply not here yet; once it syncs the same tap succeeds,

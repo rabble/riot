@@ -1093,7 +1093,46 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(ReactionFailure(MobileError.SessionLimit).publicCode, "reaction_capacity")
         XCTAssertEqual(ReactionFailure(MobileError.ClockUnavailable).kind, .clock)
         XCTAssertEqual(ReactionFailure(MobileError.InvalidInput).kind, .authorityOrInput)
-        XCTAssertEqual(ReactionFailure(MobileError.Internal).publicCode, "reaction_authority_or_input")
+    }
+
+    /// A transient session fault is NOT an authority failure. `StalePreview`
+    /// arrives when a concurrent import invalidated the preview slot mid-write;
+    /// retrying works. It spent the outage of 2026-08-03 wearing
+    /// "Reactions aren't available for this post" — permanent-sounding copy for
+    /// the most retryable condition in the enum, which is why three unrelated
+    /// root causes were indistinguishable for a week.
+    func testTransientSessionFaultsAreReportedAsRetryable() {
+        for error in [
+            MobileError.StalePreview,
+            MobileError.PreviewConsumed,
+            MobileError.PlanConsumed,
+            MobileError.ObjectClosed,
+        ] {
+            XCTAssertEqual(
+                ReactionFailure(error).kind, .retryablePersistence,
+                "\(error) is transient and must invite a retry")
+            XCTAssertNotEqual(
+                ReactionFailure(error).publicCode, "reaction_authority_or_input",
+                "\(error) must not be logged as an authority failure")
+        }
+    }
+
+    /// `Internal` means Riot broke, including a panic caught at the FFI
+    /// boundary. Telling a person that reactions are unavailable for a post
+    /// blames the post — and, worse, reads as a permissions decision someone
+    /// made. It must be its own category so a bug is visibly a bug.
+    func testInternalFaultsAreReportedAsBugsNotAuthorityFailures() {
+        let failure = ReactionFailure(MobileError.Internal)
+        XCTAssertEqual(failure.kind, .internalFault)
+        XCTAssertEqual(failure.publicCode, "reaction_internal")
+        XCTAssertNotEqual(failure.message, "Reactions aren\u{2019}t available for this post.")
+    }
+
+    /// The bucket that remains is genuinely about authority or malformed input.
+    func testAuthorityAndInputFailuresKeepTheirBucket() {
+        for error in [MobileError.InvalidInput, MobileError.AppRejected] {
+            XCTAssertEqual(ReactionFailure(error).kind, .authorityOrInput)
+        }
     }
 
     func testFailureCategoriesDisableTheIntendedScope() async {

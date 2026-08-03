@@ -34,6 +34,12 @@ public struct ReactionWriteSnapshot: Sendable {
 public enum ReactionFailureKind: String, Sendable {
     case retryablePersistence
     case authorityOrInput
+    /// Riot itself broke — including a Rust panic caught at the FFI boundary,
+    /// which `with_active` turns into `MobileError::Internal`. Its own category
+    /// because telling someone "reactions aren't available for this post"
+    /// blames the post and reads as a moderation decision, when in fact nothing
+    /// is wrong with the post, the community, or them.
+    case internalFault
     case capacity
     case clock
     /// The community itself has not arrived on this device yet — the sidebar
@@ -73,15 +79,28 @@ public struct ReactionFailure: Equatable, Sendable {
                 kind: .retryablePersistence,
                 publicCode: "reaction_persistence",
                 message: "Couldn’t save your reaction. Try again.")
+        // TRANSIENT SESSION STATE, NOT AUTHORITY. A concurrent import replaced
+        // the preview/plan slot mid-write; the next attempt succeeds. These
+        // spent the 2026-08-03 outage wearing the permanent-sounding authority
+        // copy, which is a large part of why three unrelated root causes were
+        // indistinguishable from each other for a week.
+        case .StalePreview, .PreviewConsumed, .PlanConsumed, .ObjectClosed:
+            self.init(
+                kind: .retryablePersistence,
+                publicCode: "reaction_stale_session",
+                message: "Couldn’t save your reaction. Try again.")
+        case .Internal, .EntropyUnavailable:
+            self.init(
+                kind: .internalFault,
+                publicCode: "reaction_internal",
+                message: "Riot hit a problem on this device. Nothing is wrong with this post — please report it if it keeps happening.")
         case .CommunityUnavailable:
             self.init(
                 kind: .communityNotSynced,
                 publicCode: "reaction_community_not_synced",
                 message: "This community hasn’t reached this device yet. Exchange with a member, then react.")
-        case .InvalidInput, .ObjectClosed, .StalePreview, .AppRejected,
-             .Internal, .DraftNotFound, .ImportRejected, .PreviewConsumed,
-             .PlanConsumed, .EntropyUnavailable, .NotSpaceOrganizer,
-             .LegacyProfileCannotOrganize, .none:
+        case .InvalidInput, .AppRejected, .DraftNotFound, .ImportRejected,
+             .NotSpaceOrganizer, .LegacyProfileCannotOrganize, .none:
             self.init(
                 kind: .authorityOrInput,
                 publicCode: "reaction_authority_or_input",
