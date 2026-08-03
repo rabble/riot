@@ -1459,39 +1459,21 @@ final class NewswireSurfaceTests: XCTestCase {
                        ["Support", "Solidarity", "Important", "Grief"])
     }
 
-    /// `toggleReaction` calls the reactor with the tapped kind and `active: true`
-    /// the first time, and `active: false` on the next tap of the same kind — the
-    /// session-local active state flips only after core accepts, and drives the
-    /// pink selection.
-    func testToggleReactionCallsTheReactorWithTheRightKindAndActiveThenRetracts() {
-        let reactor = RecordingReactor()
-        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
-        let model = NewswireSurfaceModel(
-            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
-            editor: ThrowingEditor(), authority: StubAuthority(),
-            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
-            reactor: reactor)
-        model.load()
-        XCTAssertTrue(model.canReact, "a wired reactor + descriptor ⇒ the reaction bar is offered")
-        let row = NewswirePostRow(post)
-
-        // First tap ⇒ react (active: true) with the exact kind name, and the
-        // session marks it active.
-        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .reacted)
-        XCTAssertEqual(reactor.calls.count, 1)
-        XCTAssertEqual(reactor.calls.first?.kind, "support")
-        XCTAssertEqual(reactor.calls.first?.active, true)
-        XCTAssertEqual(reactor.calls.first?.parent, "p1")
-        XCTAssertTrue(model.isReacted(post: "p1", kind: .support))
-
-        // Second tap of the same kind ⇒ retract (active: false), and the session
-        // clears it.
-        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .retracted)
-        XCTAssertEqual(reactor.calls.last?.active, false)
-        XCTAssertFalse(model.isReacted(post: "p1", kind: .support))
-        // A different kind is independent — still inactive, never toggled.
-        XCTAssertFalse(model.isReacted(post: "p1", kind: .grief))
-    }
+    // REMOVED: testToggleReactionCallsTheReactorWithTheRightKindAndActiveThenRetracts
+    //
+    // It asserted the pre-#147 contract — that a legacy synchronous reactor
+    // alone offers the reaction bar (`canReact`) and that the sync path keeps
+    // session-local selection state. PR #147 ("compact interactive newswire
+    // reactions + async reaction writes") deliberately reversed the first
+    // ("a legacy synchronous reactor alone must not expose buttons whose tap
+    // path cannot use it") and moved selection onto the viewer-aware
+    // projection. The test was never updated, so four of its assertions have
+    // failed ever since — invisibly, because iOS/macOS tests are not in CI.
+    //
+    // Every assertion worth keeping is already covered, and correctly, by
+    // `testToggleReactionCallsTheReactorWithDirectionFromProjection` (which
+    // asserts `canReact` is FALSE for a writer-less model) and
+    // `testProjectedViewerReactionSurvivesFreshModelAndNextTapRetracts`.
 
     /// Selection and toggle direction come from core's viewer-aware projection,
     /// so rebuilding the model (an app relaunch) cannot turn an active reaction
