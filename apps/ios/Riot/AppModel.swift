@@ -666,6 +666,10 @@ public final class RiotAppModel: ObservableObject {
     private var knownEntryIDs: Set<String>?
 
     private var repository: RiotProfileRepository?
+    /// The same per-community seen cursors the wire advances when the reader
+    /// looks at it, so the chooser's "N new" and the wire's own unread badge
+    /// can never disagree.
+    private let seenCursor = SeenCursorStore()
     #if DEBUG
     public private(set) var reactionUITestConfiguration: ReactionUITestConfiguration?
     #endif
@@ -1114,8 +1118,35 @@ public final class RiotAppModel: ObservableObject {
     private func refreshCommunities() {
         guard let repository else { return }
         if let rows = try? repository.listCommunities() {
-            communities = rows.map { CommunityChooserRow.from($0) }
+            communities = rows.map { row in
+                CommunityChooserRow.from(row, unread: unreadCount(for: row))
+            }
         }
+    }
+
+    /// How many posts in this community the reader has not seen, or `nil` when
+    /// it cannot be counted — no descriptor has arrived yet, or the projection
+    /// failed. `nil` is NOT zero: the chooser says "up to date" only when it
+    /// actually counted, never as a guess.
+    ///
+    /// The cursor is the same per-community seen cursor the wire itself
+    /// advances when the reader looks at it, so the chooser and the wire can
+    /// never disagree about what counts as new.
+    private func unreadCount(for row: CommunityRow) -> Int? {
+        guard let repository, let descriptor = row.descriptorEntryId,
+              !descriptor.isEmpty,
+              let projection = try? repository.projectNewswire(
+                  spaceDescriptorEntryID: descriptor)
+        else { return nil }
+        let posts = (projection.openWire + projection.frontPage)
+            .reduce(into: [String: SeenPostRef]()) { seen, post in
+                seen[post.entryId] = SeenPostRef(
+                    entryID: post.entryId, taiJ2000Micros: post.taiJ2000Micros)
+            }
+        return NewswireUnread(
+            posts: Array(posts.values),
+            cursor: seenCursor.cursor(forCommunity: descriptor)
+        ).count
     }
 
     /// Opens the Level-1 community chooser (Command-K / the community-name control).

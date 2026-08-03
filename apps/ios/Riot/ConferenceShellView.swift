@@ -1431,7 +1431,7 @@ private struct CommunityShellView: View {
                                     Text(placeName)
                                         .font(.system(size: 13, weight: .medium))
                                         .lineLimit(1)
-                                    Text(row.syncFreshness)
+                                    Text(row.whatsNew)
                                         .font(.system(size: 9, design: .monospaced))
                                         .foregroundStyle((selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)).opacity(0.6))
                                         .lineLimit(1)
@@ -1858,7 +1858,7 @@ private struct HomeRouteView: View {
         if model.isRelaySyncing { return "Syncing…" }
         if let text = model.lastSyncedText(for: activeNamespace) { return text }
         if let row = model.communities.first(where: { $0.namespaceID == activeNamespace }) {
-            return row.syncFreshness
+            return row.whatsNew
         }
         return "Synced"
     }
