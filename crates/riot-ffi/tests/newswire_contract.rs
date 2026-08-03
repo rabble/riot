@@ -1620,3 +1620,76 @@ fn the_sync_inventory_ceiling_is_sixty_four_live_entries() {
          as the authority-or-input bucket that says reactions are unavailable"
     );
 }
+
+// --- Sync freshness: the sidebar's "Not synced yet" ------------------------
+//
+// `CommunityRow.sync_freshness_unix_seconds` is what the community sidebar
+// renders as "Synced 5 minutes ago" or, when it is `None`, "Not synced yet".
+// It is written in exactly one place in the whole crate — `site_ffi.rs`, the
+// followed-SITE path. No community sync path ever stamped it, so every
+// community on every device read "Not synced yet" permanently, no matter how
+// many successful syncs had landed. Meanwhile the Home header renders a
+// SEPARATE, session-only Swift dictionary, so one screen said "Synced just
+// now" and "Not synced yet" about the same community at the same moment.
+
+#[test]
+fn a_relay_pull_stamps_the_communitys_sync_freshness() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("freshness.db")
+        .to_string_lossy()
+        .to_string();
+    let key = vec![3u8; 32];
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    let reader = open_local_profile_with_database(db_path).expect("durable reader");
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            key,
+        )
+        .expect("join community");
+
+    let before = reader
+        .list_communities()
+        .expect("communities")
+        .into_iter()
+        .find(|row| row.namespace_id == reference.namespace_id)
+        .expect("the joined community is listed");
+    assert_eq!(
+        before.sync_freshness_unix_seconds, None,
+        "a community that has never synced has no freshness stamp"
+    );
+
+    carry(&reader, space.signed_bytes.clone());
+    carry(&reader, post.signed_bytes.clone());
+
+    let after = reader
+        .list_communities()
+        .expect("communities")
+        .into_iter()
+        .find(|row| row.namespace_id == reference.namespace_id)
+        .expect("the joined community is still listed");
+    assert!(
+        after.sync_freshness_unix_seconds.is_some(),
+        "content arriving over sync must stamp the community's freshness — \
+         without it the sidebar reads \"Not synced yet\" forever, on every \
+         device, however many syncs have succeeded"
+    );
+}

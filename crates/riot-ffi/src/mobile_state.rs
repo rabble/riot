@@ -1451,6 +1451,46 @@ pub(crate) fn create_plan(
     })
 }
 
+/// Records that content for these namespaces just ARRIVED FROM SOMEONE ELSE.
+///
+/// `CommunityRow.sync_freshness_unix_seconds` is what the sidebar turns into
+/// "Synced 5 minutes ago" — or, when it is `None`, "Not synced yet". It was
+/// written in exactly one place in this crate, the followed-SITE path in
+/// `site_ffi.rs`; no community path ever wrote it. So every community on every
+/// device read "Not synced yet" permanently, however many syncs had landed,
+/// while Home's header rendered a separate session-only value and cheerfully
+/// said "Synced just now" about the same community in the same window.
+///
+/// Deliberately only reachable from paths carrying entries that came from
+/// somewhere else — `accept_plan` (sync sessions, carried bundles, files) and
+/// the anchor pull. Local authoring commits through `import_signed_newswire`
+/// and must never stamp this: writing your own post is not hearing from anyone.
+fn stamp_sync_freshness(profile: &mut LocalProfile, entries: &[SignedWillowEntry]) {
+    use willow25::groupings::Namespaced;
+    let Ok(now) = riot_core::willow::system_snapshot() else {
+        return;
+    };
+    let mut stamped: Vec<[u8; 32]> = Vec::new();
+    for signed in entries {
+        let Ok(entry) = riot_core::willow::decode_entry_canonic(&signed.entry_bytes) else {
+            continue;
+        };
+        let namespace = *entry.namespace_id().as_bytes();
+        if stamped.contains(&namespace) {
+            continue;
+        }
+        if let Some(record) = profile.registry.find_mut(&namespace) {
+            record.last_sync_unix_seconds = Some(now.unix_seconds);
+            stamped.push(namespace);
+        }
+    }
+    if !stamped.is_empty() {
+        // Best effort: a freshness stamp must never fail an import that has
+        // already committed. The in-memory registry is updated either way.
+        let _ = persist_registry(profile);
+    }
+}
+
 pub(crate) fn accept_plan(
     inner: &Arc<Mutex<ProfileState>>,
     plan_id: u64,
@@ -1494,6 +1534,7 @@ pub(crate) fn accept_plan(
                 install_sync_inventory(profile, next_inventory)?;
                 advance_app_write_floor(profile, &sync_entries)?;
                 refresh_app_trust_markers(profile)?;
+                stamp_sync_freshness(profile, &sync_entries);
                 Ok(ImportAcceptance {
                     accepted_entry_ids: sync_entries
                         .into_iter()
@@ -2179,6 +2220,9 @@ pub(crate) fn import_anchor_pulled_namespace(
                 }
                 imported += eligible;
             }
+        }
+        if imported > 0 {
+            stamp_sync_freshness(profile, entries);
         }
         Ok(imported)
     })
