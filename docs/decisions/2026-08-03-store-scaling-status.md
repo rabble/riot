@@ -86,66 +86,63 @@ in `crates/xtask/src/main.rs` as `EXPECTED_CEILINGS`, checked exactly by
 **The caps cannot be raised in this state.** A 12k-entry store takes seven
 minutes to write and 17 seconds to open.
 
-## The next two fixes
+## The next two fixes — BOTH TRIED, BOTH FAILED
 
-Both remaining sites are the same shape as the original bug: *rebuilding a
-whole-store index per operation*.
+Both were implemented, measured, and reverted on 2026-08-03. The tree does not
+contain them. Recorded here so nobody spends another afternoon on them.
 
-### 1. Write path — `EvidenceStore::persist` re-reads the live set every commit
+### 1. Write path — hand `persist` the delta instead of re-reading (FAILED)
 
-`persist` calls `read_connection(live_entry_keys)`, a full
-`SELECT namespace_id, entry_id FROM live_entries`, on every commit; the
-transaction then scans `live_entries` again to find departed rows. Two
-full-table reads per write, so O(n^2) across a store's life. Introduced by
-`44fc0379` — that commit removed an O(store) *write* and left an O(store)
-*read* in its place.
+**Hypothesis.** `persist` ran a full `SELECT ... FROM live_entries` per commit,
+and `persist_transaction` looped over the entire live set running two `SELECT`s
+per entry. At 12k entries in 187 commits that is ~2.2M queries, which at typical
+`query_row` cost arithmetically lands on the 451 s observed. Passing
+`entered` / `next_live_keys` / `previous_live` from the caller's in-memory
+`JoinState` removes every one of those reads.
 
-**Take:** the join already knows the answer and should hand it over. `JoinState`
-holds both the previous `live` and the next `live` in memory, so the delta is a
-set difference computed in RAM with no database read at all. Change
-`EvidenceMutation` to carry `entered: Vec<LiveJoinEntry>` + `departed:
-Vec<EntryId>` instead of `live: <the entire live set>`, and let `persist` charge
-and write exactly those.
+**Result: 451 s -> 413 s at 12k entries. An 8% win.** The arithmetic match was a
+coincidence. The per-row query loop is not the dominant cost.
 
-The safety question is whether `persist` can trust a caller-supplied delta
-rather than re-deriving it. It can: `persist_transaction` already opens with a
-generation-guarded update
-(`UPDATE evidence_meta SET ... WHERE singleton = 1 AND generation = ?4`,
-`BusyRetryable` if it does not match exactly one row), so a delta computed
-against a stale view cannot commit. That guard is what makes this safe, and it
-should be called out in the code, not rediscovered.
+**And it costs a security property.** The whole-live-set rewrite was doubling as
+an integrity re-check of every live row on every commit, which is what
+`sqlite_fail_closed.rs::persist_rejects_a_live_row_disagreeing_with_its_accepted_entry`
+asserts: it tampers with entry A's accepted bytes, forgets **B**, and expects the
+unrelated write to catch A. Touching only what moved means A is not re-read.
+(The tamper is still caught at profile open by `validate_stored_entry`, so the
+property is delayed rather than lost — but that is a deliberate contract change
+to a fail-closed test, not something to slip in for 8%.)
 
-Expected: removes both full scans; write cost becomes proportional to the batch.
-Confidence: high — mechanism is clear and the guard already exists. Verify with
-the build column, which is where it will show.
+**Verdict:** not worth it as scoped. If the real hot spot is found and this
+becomes necessary, the security trade-off must be decided explicitly first.
 
-### 2. Open path — `replay_final_live` rebuilds its bucket index per receipt
+### 2. Open path — hoist the bucket index out of the receipt loop (FAILED)
 
-`validate_relational_state` loops over every import receipt and calls
-`replay_final_live` each time; that function builds its `by_path` bucket index
-over the whole union on every call. `50f7d762` made the inner comparison cheap
-and left the index build at O(n) per receipt, so open is still O(n^2).
+**Hypothesis.** `replay_final_live` rebuilt `by_path` over the whole union on
+every call, once per receipt, so open stayed O(n^2). Build it once over
+`accepted` before the receipt loop and pass it in.
 
-**Take:** hoist it. Build `by_path` **once** over `accepted` before the receipt
-loop and pass it in; per receipt, look up the candidate's ancestor buckets and
-intersect against that receipt's union (a `BTreeSet` membership test). Index
-build becomes O(total) once instead of O(n) per receipt.
+**Result: 17.2 s -> 16.7 s at 12k entries. Noise.** Algorithmically sound,
+practically worthless at these sizes, and it adds a parameter and a union
+membership check. Reverted as unearned complexity.
 
-Bigger structural option, worth doing separately rather than instead:
-**watermark the audit.** Persist "verified through generation N" and replay only
-receipts after it, so a steady-state open is O(new since last open) rather than
-O(every receipt ever). The hoist is the small, safe change; the watermark is the
-one that makes open cost stop depending on history length at all.
+### What this means
 
-Confidence: high on the hoist, medium on the watermark's blast radius — it
-changes what a profile open actually guarantees, so it wants its own review.
+The dominant cost at scale is **still unlocated**. Three sites have now been
+excluded by measurement — the all-pairs dominance scan (that one was real:
+`50f7d762`, 813 ms -> 183 ms open), the per-commit live-set reads, and the
+per-receipt index rebuild. Whatever remains is elsewhere.
 
-### Then, and only then
+**Do not propose another fix from reading the code.** Six predictions were made
+across one day about where this cost lives; six were wrong. The next step is to
+instrument the write path phase by phase — signing, `inspect` verification,
+`plan_join_with_payloads`, `persist`, SQLite commit — the way
+`profile_open_cost_decomposition` did for the open path, and let the numbers name
+the target. That decomposition took twenty minutes and immediately found the real
+open-path cost after two wrong guesses.
 
-Re-measure, find where the byte budgets actually bind, and amend
-`fixtures/manifest.json` + `crates/xtask/src/main.rs` together with the
-measurement in the commit message. Keep the failure at the boundary clean:
-`StoreFull` is correct behaviour and must not regress into anything quieter.
+Note also that the harness's own `signed()` helper does an ed25519 sign per
+entry inside the build timer, so some of the build column is test-harness cost,
+not Riot's. Decompose before optimising.
 
 ## Beyond the caps
 
