@@ -570,6 +570,10 @@ fn departing_projection_cost(
     Ok((bytes, rows))
 }
 
+/// The whole live projection's cost. No longer charged to a write (see
+/// `departing_projection_cost`), retained as the reference implementation of
+/// the accounting.
+#[cfg(feature = "sqlite")]
 #[allow(dead_code)]
 fn current_projection_cost(
     connection: &rusqlite::Connection,
