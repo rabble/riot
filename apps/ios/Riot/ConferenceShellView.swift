@@ -677,7 +677,7 @@ struct SiteModerationSheet: View {
         if case let .success(review) = model.review() {
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Review before signing")
+                    Text("Review before posting")
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .textCase(.uppercase)
                         .tracking(1)
@@ -706,7 +706,7 @@ struct SiteModerationSheet: View {
             if case .success = model.review() { return true }
             return false
         }()
-        Button("Sign and publish") {
+        Button("Publish this") {
             if case .signed = model.sign() { /* stays open to show the outcome */ }
         }
         .buttonStyle(.riotPrimary)
@@ -720,11 +720,11 @@ struct SiteModerationSheet: View {
         switch model.lastSignOutcome {
         case let .signed(outcome):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Signed. A fresh moderation heartbeat was published.")
+                Text("Published. Everyone here sees it the next time they get updates.")
                     .font(.riot(.body, size: 13, relativeTo: .caption))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 // The signed bytes are the propagation payload — surfaced, not dropped.
-                Text("Share \(outcome.action.signedBytes.count + outcome.epoch.signedBytes.count) bytes to sync this to followers.")
+                Text("Hand this to someone nearby to carry it onward.")
                     .font(.riot(.mono, size: 11, relativeTo: .caption2))
                     .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
@@ -1855,12 +1855,12 @@ private struct HomeRouteView: View {
     /// "Synced 2m ago" / "Syncing…" — the current community's own heartbeat,
     /// glanceable at the top of Home instead of a full connect card.
     private var syncStatusText: String {
-        if model.isRelaySyncing { return "Syncing…" }
+        if model.isRelaySyncing { return "Checking…" }
         if let text = model.lastSyncedText(for: activeNamespace) { return text }
         if let row = model.communities.first(where: { $0.namespaceID == activeNamespace }) {
             return row.syncFreshness
         }
-        return "Synced"
+        return "Up to date"
     }
 
     /// A small sync chip in the header's top-right — tap for how syncing works
@@ -1879,7 +1879,7 @@ private struct HomeRouteView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("How syncing works")
+        .help("How updates reach you")
         .accessibilityIdentifier("home-sync-status")
         .popover(isPresented: $showSyncInfo, arrowEdge: .top) { syncInfoPopover }
     }
@@ -1890,7 +1890,7 @@ private struct HomeRouteView: View {
         case .idle: return "Not searching right now"
         case .connecting, .gettingLatest: return "Connecting to someone nearby…"
         case .preview: return "Someone nearby has updates to share"
-        case .caughtUp, .alreadyCurrent: return "In sync with a nearby phone"
+        case .caughtUp, .alreadyCurrent: return "Up to date with a phone nearby"
         case .outOfRange: return "A phone just went out of range"
         case .failed: return "Couldn't connect — try again"
         default: return "Looking for people nearby…"
@@ -1902,7 +1902,7 @@ private struct HomeRouteView: View {
     /// to do either. Nothing's lost offline; it catches up on reconnect.
     @ViewBuilder private var syncInfoPopover: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Staying in sync")
+            Text("How updates reach you")
                 .font(.riotSerif(size: 20, relativeTo: .title3))
                 .foregroundStyle(RiotTheme.ink(for: colorScheme))
             Text("This community stays current whenever it can reach others — over the internet, or people right next to you. Nothing's lost: offline changes catch up when you reconnect.")
@@ -1916,7 +1916,7 @@ private struct HomeRouteView: View {
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Over the internet").font(.system(size: 13, weight: .semibold))
-                    Text(model.isRelaySyncing ? "Syncing now…" : (model.lastSyncedText(for: activeNamespace) ?? "Not synced yet"))
+                    Text(model.isRelaySyncing ? "Checking now…" : (model.lastSyncedText(for: activeNamespace) ?? "Nothing here yet"))
                         .font(.riot(.mono, size: 11, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
@@ -1924,7 +1924,7 @@ private struct HomeRouteView: View {
                 if model.isRelaySyncing {
                     ProgressView().controlSize(.small)
                 } else {
-                    Button("Sync now") { Task { await model.syncFromRelay() } }
+                    Button("Check for updates") { Task { await model.syncFromRelay() } }
                         .buttonStyle(.riotSecondary)
                 }
             }
@@ -2473,11 +2473,11 @@ private struct ConnectionStatusView: View {
             "\(count) offered update\(count == 1 ? "" : "s") to review"
         case .caughtUp:
             if let count = nearby.itemsBroughtOver, count > 0 {
-                "Synced · \(count) update\(count == 1 ? "" : "s") added"
+                "Got \(count) new update\(count == 1 ? "" : "s")"
             } else {
-                "Synced · you both have the same updates"
+                "You both already had the same updates"
             }
-        case .alreadyCurrent: "Synced · nothing new to bring over"
+        case .alreadyCurrent: "Nothing new to bring over"
         case .differentSpace: "They are in a different space, so nothing was shared"
         case .outOfRange: "They went out of range"
         case .failed: "The connection failed — try again"

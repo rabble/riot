@@ -101,7 +101,7 @@ public struct ShareCommunitySheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Nothing to share yet")
                     .font(.riot(.monoBold, size: 17, relativeTo: .headline))
-                Text("This community's link becomes available once its details reach this device on first sync. Check back in a moment.")
+                Text("This community's link becomes available once its details reach this device. Check back in a moment.")
                     .font(.riot(.body, size: 13, relativeTo: .caption))
                     .foregroundStyle(.secondary)
             }

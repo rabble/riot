@@ -184,7 +184,7 @@ public struct JoinByReferenceSheet: View {
                     .accessibilityIdentifier("join-reference-namespace")
                 // Honest: the reference carries no name, so we promise nothing about
                 // the community's name or posts until it syncs.
-                Text("Its name and posts arrive on first sync.")
+                Text("Its name and posts arrive once you connect.")
                     .font(.riot(.body, size: 13, relativeTo: .caption))
                     .foregroundStyle(.secondary)
                 Button("Join this community") {

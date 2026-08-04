@@ -798,7 +798,7 @@ public enum NewswireWireCopy {
     public static let offlineTitle = "Updates unavailable"
     public static let offlineMessage =
         "This community's wire is offline or has not synced yet. What you already have is still here."
-    public static let pendingSyncTitle = "Waiting for the first sync"
+    public static let pendingSyncTitle = "Waiting for the first posts"
     public static let pendingSyncMessage =
         "You've joined this community, but no posts have arrived yet. They appear once a peer or seed connects. Rejoin with a link, or sync with a peer nearby."
 }
@@ -826,7 +826,7 @@ public enum NewswireWireForwardAction: String, Equatable, Sendable, CaseIterable
         case .retry: "Try again"
         case .postFirstUpdate: "Post the first update"
         case .rejoinWithLink: "Rejoin with a link"
-        case .syncWithPeer: "Sync with a peer"
+        case .syncWithPeer: "Get updates from someone nearby"
         }
     }
 
@@ -1248,7 +1248,7 @@ public final class NewswireSurfaceModel: ObservableObject {
                     ReactionFailure(
                         kind: .retryablePersistence,
                         publicCode: "reaction_projection_refresh",
-                        message: "Reaction saved. Count will update when the wire refreshes."),
+                        message: "Saved. The count updates when new posts arrive."),
                     .projectionRefresh
                 )
             case let .rejected(failure):
@@ -1464,7 +1464,7 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// view for the pre-sync editor.
     public var editorialControlsPendingNote: String? {
         guard !spaceDescriptorEntryID.isEmpty, !isEditor, wire == .offlineStale else { return nil }
-        return "Editorial controls appear after this community's first sync."
+        return "Editorial controls appear once this community's details reach you."
     }
 
     /// Loads the collective projection. A missing descriptor id or a projection
@@ -2277,7 +2277,7 @@ struct NewswireReportDetailSheet: View {
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
-                Text("Signed by \(row.author)")
+                Text("By \(row.author)")
                     .font(.riot(.mono, size: 12, relativeTo: .caption))
                     .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
@@ -2498,7 +2498,7 @@ private struct EditorialActionSheet: View {
         if case let .success(review) = model.review(targetEntryID: target.entryID) {
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Review before signing")
+                    Text("Review before posting")
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .textCase(.uppercase)
                         .tracking(1)
@@ -2527,7 +2527,7 @@ private struct EditorialActionSheet: View {
             if case .success = model.review(targetEntryID: target.entryID) { return true }
             return false
         }()
-        Button("Sign and post") {
+        Button("Post this") {
             if case .signed = model.sign(targetEntryID: target.entryID) {
                 onSigned()
             }
