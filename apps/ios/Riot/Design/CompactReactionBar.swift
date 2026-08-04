@@ -1,17 +1,6 @@
 import Foundation
 import SwiftUI
 
-public extension ReactionKind {
-    var glyph: String {
-        switch self {
-        case .support: "♥"
-        case .solidarity: "✊︎"
-        case .important: "!"
-        case .grief: "◌"
-        }
-    }
-}
-
 public enum ReactionCountFormatter {
     public static func string(_ count: Int) -> String {
         String(max(0, min(count, 999))) + (count > 999 ? "+" : "")
@@ -64,8 +53,21 @@ public enum CompactReactionMetrics {
 }
 
 public enum ReactionLegendCopy {
-    public static let text =
-        "Reactions: ♥ Support · ✊︎ Solidarity · ! Important · ◌ Grief."
+    /// DERIVED from `ReactionKind.glyph`, never written out again.
+    ///
+    /// This string used to be a literal, and it drifted: #126 redrew the
+    /// controls as emoji and #161 made `ReactionKind.glyph` their canonical
+    /// home, but the legend kept the older text glyphs. The result shipped —
+    /// a legend reading "♥ Support · ✊ Solidarity · ! Important · ◌ Grief"
+    /// directly above chips rendering 🤝 ✊ ❗️ 🕯️, teaching four symbols the
+    /// app does not use. A legend whose whole job is "these glyphs mean these
+    /// words" must read the glyphs from the same place the controls do.
+    public static var text: String {
+        let pairs = ReactionKind.allCases
+            .map { "\($0.glyph) \($0.label)" }
+            .joined(separator: " · ")
+        return "Reactions: \(pairs)."
+    }
 }
 
 public enum ReactionThemeRole: Equatable, Sendable {

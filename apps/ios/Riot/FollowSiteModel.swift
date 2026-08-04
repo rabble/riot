@@ -64,7 +64,7 @@ public struct FollowedSiteDisplay: Equatable, Identifiable {
     static func label(forState state: String) -> String {
         switch state {
         case "available": return "Up to date"
-        case "pending-first-sync": return "Waiting for first sync"
+        case "pending-first-sync": return "Waiting for its first posts"
         case "transport-blocked": return "Requires Tor — unavailable"
         case "degraded": return "Needs attention"
         default: return state

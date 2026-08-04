@@ -1,4 +1,12 @@
 import Foundation
+import OSLog
+
+/// Diagnostics for the recovery ladder. Losing a profile is the most
+/// consequential thing this app does to a person's data, and until now it
+/// happened without a single log line naming the cause.
+enum ProfileRecoveryLog {
+    static let logger = Logger(subsystem: "net.protest.riot", category: "profile-recovery")
+}
 
 public struct RiotSpace: Codable, Equatable, Sendable {
     public let namespaceID: String
@@ -406,6 +414,22 @@ public final class RiotProfileRepository {
                 persisted: persisted, keyStore: keyStore, databasePath: databasePath
             )
         } catch {
+            // THE most consequential line in this file. Reaching here means the
+            // saved identity could not be reopened, so the person is about to
+            // become a NEW author: reads still work, but every write into their
+            // existing community is refused for lack of authority. That looked
+            // like "reactions are broken" with nothing in the log to say why.
+            ProfileRecoveryLog.logger.error(
+                """
+                profile-open FAILED — quarantining profile and starting fresh. \
+                error=\(String(describing: error), privacy: .public) \
+                hadSealedIdentity=\(persisted.sealedIdentity != nil, privacy: .public) \
+                hadSpace=\(persisted.space != nil, privacy: .public) \
+                durableDatabase=\(databasePath != nil, privacy: .public). \
+                A NEW author will be minted; writes into the previous community \
+                will be refused until the identity is recovered.
+                """
+            )
             let ref = try? quarantine.quarantine(
                 Self.coreArtifacts(snapshot: storage.snapshotURL, databasePath: databasePath),
                 reason: .profileOpen,
@@ -417,6 +441,11 @@ public final class RiotProfileRepository {
             // here and the launch surface offers "Start fresh".
             profile = try openFresh(databasePath: databasePath)
         }
+
+        // The shipped relay is first-run seed data, not the pull mechanism.
+        // Once a person has added a relay, reopening must leave that registry
+        // untouched so the next pull uses the person's choice.
+        try seedDefaultRelayIfNeeded(profile: profile)
 
         if persisted.space != nil {
             // STEP 2 — restore the space. A space the core will not rebuild (a
@@ -583,6 +612,17 @@ public final class RiotProfileRepository {
             try storage.save(persisted)
         }
         return repository
+    }
+
+    private static func seedDefaultRelayIfNeeded(profile: MobileProfile) throws {
+        guard try profile.listRelays().isEmpty else { return }
+        try profile.addRelay(
+            relay: RelayRecord(
+                nodeId: AnchorRelayDefaults.relayNodeId,
+                ticketBytes: AnchorRelayDefaults.communityTicket,
+                lastAnsweredUnixSeconds: nil
+            )
+        )
     }
 
     /// Rebuilds the listed space in the freshly-opened core: replays the demo

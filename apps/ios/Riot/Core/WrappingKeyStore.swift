@@ -1,6 +1,21 @@
+import CryptoKit
 import Foundation
 import OSLog
 import Security
+
+/// A short, non-reversible fingerprint of a secret, for logs.
+///
+/// The sealed identity on disk can only be opened by the exact key that sealed
+/// it. When a relaunch mints a different key, the person loses their identity
+/// and their community — silently, because nothing on this path said which key
+/// it had. Comparing fingerprints across two launches answers "is this the same
+/// key?" without ever writing key material anywhere.
+///
+/// Four bytes of SHA-256. Enough to tell two keys apart in a log; useless for
+/// recovering the key.
+func riotSecretFingerprint(_ secret: Data) -> String {
+    SHA256.hash(data: secret).prefix(4).map { String(format: "%02x", $0) }.joined()
+}
 
 public protocol WrappingKeyStore {
     func loadOrCreateWrappingKey() throws -> Data
@@ -23,10 +38,37 @@ public final class KeychainWrappingKeyStore: DestructibleSecretStore {
         let (status, existing) = read()
         switch (status, existing) {
         case (errSecSuccess, let key?):
+            // The ONLY outcome that preserves an existing identity. Everything
+            // else below mints a new key, and a new key cannot unseal the
+            // identity already on disk — the profile is then quarantined at
+            // open and the person silently becomes a new author with no
+            // authority in their own community. That failure was invisible
+            // because this path said nothing; it says something now.
+            Self.logger.notice(
+                """
+                wrapping key LOADED from keychain fp=\(riotSecretFingerprint(key), privacy: .public) \
+                (an identity sealed under a different fp cannot be opened)
+                """
+            )
             return key
         case (errSecItemNotFound, _):
+            Self.logger.error(
+                """
+                wrapping key NOT FOUND in keychain (service=\(self.service, privacy: .public), \
+                account=\(self.account, privacy: .public)) — minting a NEW key. Any identity \
+                sealed with the previous key can no longer be opened and its profile will be \
+                quarantined at next open.
+                """
+            )
             return try create()
         default:
+            Self.logger.error(
+                """
+                wrapping key UNREADABLE: OSStatus=\(status, privacy: .public) \
+                (service=\(self.service, privacy: .public)). Failing closed rather than \
+                minting a replacement key.
+                """
+            )
             throw KeychainWrappingKeyError.status(status)
         }
     }
@@ -73,13 +115,26 @@ public final class KeychainWrappingKeyStore: DestructibleSecretStore {
             guard readStatus == errSecSuccess, let existing else {
                 throw KeychainWrappingKeyError.status(readStatus)
             }
+            Self.logger.notice(
+                """
+                wrapping key add hit errSecDuplicateItem; re-read existing                 fp=\(riotSecretFingerprint(existing), privacy: .public)
+                """
+            )
             return existing
         }
         guard status == errSecSuccess else { throw KeychainWrappingKeyError.status(status) }
         if usedFallback {
-            Self.logger.warning("Wrapping key stored with when-unlocked-this-device-only simulator fallback")
+            Self.logger.warning(
+                """
+                wrapping key MINTED fp=\(riotSecretFingerprint(key), privacy: .public) stored with                 when-unlocked-this-device-only fallback. Any identity sealed under a previous key                 is now unopenable.
+                """
+            )
         } else {
-            Self.logger.notice("Wrapping key stored with when-passcode-set-this-device-only accessibility")
+            Self.logger.notice(
+                """
+                wrapping key MINTED fp=\(riotSecretFingerprint(key), privacy: .public) stored with                 when-passcode-set-this-device-only. Any identity sealed under a previous key is now                 unopenable.
+                """
+            )
         }
         return key
     }

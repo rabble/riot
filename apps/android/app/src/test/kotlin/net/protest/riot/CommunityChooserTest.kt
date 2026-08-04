@@ -25,6 +25,11 @@ class CommunityChooserTest {
         recentActivityUnixSeconds: ULong? = null,
         syncFreshnessUnixSeconds: ULong? = null,
         descriptorEntryId: String? = null,
+        // Defaults to true to match what the registry gives a record written
+        // before the field existed (`community_registry.rs`: `RecordTail` other
+        // than `Current` decodes as `true`), so every case here keeps the
+        // behaviour it was written against.
+        carryAutomatically: Boolean = true,
     ): CommunityRow = CommunityRow(
         namespaceId = namespaceId,
         title = title,
@@ -32,6 +37,7 @@ class CommunityChooserTest {
         descriptorEntryId = descriptorEntryId,
         recentActivityUnixSeconds = recentActivityUnixSeconds,
         syncFreshnessUnixSeconds = syncFreshnessUnixSeconds,
+        carryAutomatically = carryAutomatically,
         archived = archived,
         quarantined = quarantined,
         available = available,

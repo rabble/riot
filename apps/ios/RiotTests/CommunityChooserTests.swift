@@ -173,14 +173,14 @@ final class CommunityChooserTests: XCTestCase {
         func at(_ secondsAgo: TimeInterval) -> UInt64 { UInt64(now.timeIntervalSince1970 - secondsAgo) }
 
         XCTAssertEqual(CommunityRelativeTime.recentActivity(nil, now: now), "No activity yet")
-        XCTAssertEqual(CommunityRelativeTime.syncFreshness(nil, now: now), "Not synced yet")
+        XCTAssertEqual(CommunityRelativeTime.syncFreshness(nil, now: now), "Nothing here yet")
         XCTAssertEqual(CommunityRelativeTime.recentActivity(at(10), now: now), "Active just now")
         XCTAssertEqual(CommunityRelativeTime.recentActivity(at(60), now: now), "Active 1 minute ago")
         XCTAssertEqual(CommunityRelativeTime.recentActivity(at(120), now: now), "Active 2 minutes ago")
         XCTAssertEqual(CommunityRelativeTime.recentActivity(at(3_600), now: now), "Active 1 hour ago")
-        XCTAssertEqual(CommunityRelativeTime.syncFreshness(at(7_200), now: now), "Synced 2 hours ago")
+        XCTAssertEqual(CommunityRelativeTime.syncFreshness(at(7_200), now: now), "Up to date 2 hours ago")
         XCTAssertEqual(CommunityRelativeTime.recentActivity(at(86_400), now: now), "Active 1 day ago")
-        XCTAssertEqual(CommunityRelativeTime.syncFreshness(at(172_800), now: now), "Synced 2 days ago")
+        XCTAssertEqual(CommunityRelativeTime.syncFreshness(at(172_800), now: now), "Up to date 2 days ago")
     }
 
     func testAChooserRowLeadsWithNameAndRelationshipNeverTheNamespaceID() {
@@ -201,7 +201,7 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertEqual(row.name, "Queers of Aotearoa")
         XCTAssertEqual(row.relationshipLabel, "Member")
         XCTAssertEqual(row.recentActivity, "Active 1 hour ago")
-        XCTAssertEqual(row.syncFreshness, "Not synced yet")
+        XCTAssertEqual(row.syncFreshness, "Nothing here yet")
         XCTAssertTrue(row.available)
         // No visible field carries the raw namespace id — it is a11y-only.
         for visible in [row.name, row.relationshipLabel, row.recentActivity, row.syncFreshness] {

@@ -10,7 +10,7 @@ members = [
     "crates/riot-conformance",
     "crates/xtask",
 ]
-exclude = ["vendor/tor-dirmgr-0.44.0"]
+exclude = ["vendor/tor-dirmgr-0.44.0", "vendor/willow25-0.6.0-alpha.3", "vendor/bab_rs-0.8.1"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -68,6 +68,11 @@ tracing-oslog = "=0.3.0"
 # compatible with 0.40.1. Keep Riot's pinned SQLite 3.53.2 engine by carrying
 # the upstream crate with only that dependency bound widened; see RIOT_PATCH.md.
 tor-dirmgr = { path = "vendor/tor-dirmgr-0.44.0" }
+# willow25/bab_rs carry Riot's feature-gating patches: the persistent storage
+# chain (fjall, async-fs, bab_rs backend_filesystem) is opt-in so wasm builds
+# can exclude it; see RIOT_PATCH.md in each vendored crate.
+willow25 = { path = "vendor/willow25-0.6.0-alpha.3" }
+bab_rs = { path = "vendor/bab_rs-0.8.1" }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.

@@ -3,7 +3,21 @@ import XCTest
 
 final class CompactReactionBarTests: XCTestCase {
     func testClosedReactionPresentationTableUsesApprovedGlyphsAndNames() {
-        XCTAssertEqual(ReactionKind.allCases.map(\.glyph), ["♥", "✊︎", "!", "◌"])
+        // The glyph set is presentation-only and has changed once already
+        // (#126 words -> emoji, #161 canonicalised on ReactionKind). What must
+        // hold is that it stays a CLOSED set of four, one per kind, each
+        // distinct and non-empty — not any particular four characters.
+        let glyphs = ReactionKind.allCases.map(\.glyph)
+        XCTAssertEqual(glyphs.count, 4)
+        XCTAssertEqual(Set(glyphs).count, 4, "each kind is visually distinct")
+        for glyph in glyphs {
+            XCTAssertFalse(glyph.isEmpty, "every kind draws a glyph")
+        }
+        // The wire vocabulary and the spoken labels are NOT presentation and
+        // are pinned exactly.
+        XCTAssertEqual(
+            ReactionKind.allCases.map(\.rawValue),
+            ["support", "solidarity", "important", "grief"])
         XCTAssertEqual(
             ReactionKind.allCases.map(\.label),
             ["Support", "Solidarity", "Important", "Grief"])
@@ -30,9 +44,19 @@ final class CompactReactionBarTests: XCTestCase {
         XCTAssertEqual(CompactReactionMetrics.glyphPointSize, 15)
         XCTAssertEqual(CompactReactionMetrics.countPointSize, 13)
         XCTAssertEqual(CompactReactionMetrics.contentSpacing, 6)
+        // The legend teaches the glyphs the controls actually draw. Asserted
+        // as a RELATIONSHIP rather than a literal, because a literal is what
+        // let the legend and the controls disagree in a shipped build.
         XCTAssertEqual(
             ReactionLegendCopy.text,
-            "Reactions: ♥ Support · ✊︎ Solidarity · ! Important · ◌ Grief.")
+            "Reactions: "
+                + ReactionKind.allCases.map { "\($0.glyph) \($0.label)" }
+                    .joined(separator: " · ") + ".")
+        for kind in ReactionKind.allCases {
+            XCTAssertTrue(
+                ReactionLegendCopy.text.contains(kind.glyph),
+                "the legend must show the glyph \(kind.label) actually draws")
+        }
     }
 
     func testReactionSemanticColorsMatchTokensAndMeetTextContrast() {

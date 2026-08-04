@@ -4,7 +4,7 @@ public enum AlertsStrings {
     public static let title = "Alerts"
     public static let organizerBadge = "Organizer"
     public static let emptyTitle = "No alerts yet"
-    public static let emptyMessage = "Signed alerts from this community will appear here."
+    public static let emptyMessage = "Alerts from this community will appear here."
     public static let expired = "Expired"
     public static let active = "Active"
     public static func expires(inSeconds: Int64) -> String {

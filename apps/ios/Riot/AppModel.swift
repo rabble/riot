@@ -12,7 +12,7 @@ import SwiftUI
 /// drives the pull; the visible `AnchorRelaySyncCard` reads this too.
 public enum AnchorRelayDefaults {
     /// The deployed relay's stable NodeId (64 hex) — the whole dial hint.
-    public static let relayNodeId =
+    public static let bakedRelayNodeId =
         "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
 
     /// A root-signed ReadCommitted ticket (hex) for a community already committed
@@ -21,8 +21,33 @@ public enum AnchorRelayDefaults {
     /// relay; community root (W)
     /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
     /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
-    public static let communityTicketHex =
+    public static let bakedCommunityTicketHex =
         "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62b28f1a6ad8080f5840badb5fa31067a5c330ba16ca97fbedf1ba9201c981c5014175721ccb2af61c83723514116260ef952516d0fcc0b474455b0ac8a4dd3fa39c019c77848fed9e00"
+
+    /// Point a build at a DIFFERENT anchor — a developer's loopback
+    /// `demo_anchor` — instead of the deployed relay. `RIOT_ANCHOR_HINT` takes the
+    /// full `<id_hex>@<ip:port>,…` hint the FFI already parses (a bare `<id_hex>`
+    /// works too, but only where discovery can resolve it); `RIOT_ANCHOR_TICKET_HEX`
+    /// takes the matching root-signed ticket.
+    ///
+    /// BOTH or NEITHER. A local hint carrying the deployed relay's ticket dials a
+    /// host that never committed that site and is refused, which reads as a
+    /// transport failure rather than the misconfiguration it is.
+    static func resolvedRelay(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> (hint: String, ticketHex: String) {
+        guard let hint = environment["RIOT_ANCHOR_HINT"], !hint.isEmpty,
+              let ticketHex = environment["RIOT_ANCHOR_TICKET_HEX"], !ticketHex.isEmpty
+        else { return (bakedRelayNodeId, bakedCommunityTicketHex) }
+        return (hint, ticketHex)
+    }
+
+    /// The relay this build actually dials — the baked deployed relay unless
+    /// overridden.
+    public static var relayNodeId: String { resolvedRelay().hint }
+
+    /// The ticket this build actually presents.
+    public static var communityTicketHex: String { resolvedRelay().ticketHex }
 
     /// A human name for the built-in community, shown when its own signed
     /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
@@ -97,6 +122,8 @@ enum AnchorRelayFailure {
             return invalidBuiltInLink
         case .TicketMalformed:
             return invalidBuiltInLink
+        case .NoRelayConfigured:
+            return "Riot doesn’t have an internet relay configured yet. Nothing on your device changed."
         case .BadAnchorAddress:
             return "Riot’s built-in relay address is no longer valid. Update Riot to reconnect; nothing on your device changed."
         case .Import:
@@ -563,6 +590,12 @@ public final class RiotAppModel: ObservableObject {
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
     @Published public private(set) var errorMessage: String?
 
+    /// The raw refusal behind ``errorMessage``, kept for the log and the
+    /// Diagnostics panel. It is never what the alert shows: a person who cannot
+    /// act on `StalePreview` is not helped by being shown it. Cleared together
+    /// with the message so a dismissed failure leaves nothing behind.
+    @Published public private(set) var errorTechnicalDetails: String?
+
     /// Every person this device can name, keyed by lowercase hex subspace id and
     /// already rendered by core (`"Ana · a3f91122"`).
     ///
@@ -664,6 +697,10 @@ public final class RiotAppModel: ObservableObject {
     private var knownEntryIDs: Set<String>?
 
     private var repository: RiotProfileRepository?
+    /// The same per-community seen cursors the wire advances when the reader
+    /// looks at it, so the chooser's "N new" and the wire's own unread badge
+    /// can never disagree.
+    private let seenCursor = SeenCursorStore()
     #if DEBUG
     public private(set) var reactionUITestConfiguration: ReactionUITestConfiguration?
     #endif
@@ -764,6 +801,20 @@ public final class RiotAppModel: ObservableObject {
 
     public func dismissError() {
         errorMessage = nil
+        errorTechnicalDetails = nil
+    }
+
+    /// Routes a refusal to the alert as words a person can act on, and the raw
+    /// string to the log. Every path that used to do
+    /// `errorMessage = String(describing: error)` goes through here — that line
+    /// is how `Database` and `InvalidInput` reached people who had done nothing
+    /// wrong, on the launch screen, with no next step.
+    func presentFailure(_ error: Error) {
+        errorMessage = PlainFailureText.plain(for: error)
+        let details = PlainFailureText.technical(for: error)
+        errorTechnicalDetails = details
+        Logger(subsystem: "net.protest.riot", category: "failure")
+            .error("surfaced failure: \(details, privacy: .public)")
     }
 
     /// Dismisses the non-fatal self-healing notice once the person has seen it.
@@ -995,7 +1046,7 @@ public final class RiotAppModel: ObservableObject {
                 }
             }
         } catch {
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
 
@@ -1031,7 +1082,7 @@ public final class RiotAppModel: ObservableObject {
             reactionUITestConfiguration = configuration
             finishBootstrap(repository: pair.reader)
         } catch {
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
     #endif
@@ -1112,8 +1163,35 @@ public final class RiotAppModel: ObservableObject {
     private func refreshCommunities() {
         guard let repository else { return }
         if let rows = try? repository.listCommunities() {
-            communities = rows.map { CommunityChooserRow.from($0) }
+            communities = rows.map { row in
+                CommunityChooserRow.from(row, unread: unreadCount(for: row))
+            }
         }
+    }
+
+    /// How many posts in this community the reader has not seen, or `nil` when
+    /// it cannot be counted — no descriptor has arrived yet, or the projection
+    /// failed. `nil` is NOT zero: the chooser says "up to date" only when it
+    /// actually counted, never as a guess.
+    ///
+    /// The cursor is the same per-community seen cursor the wire itself
+    /// advances when the reader looks at it, so the chooser and the wire can
+    /// never disagree about what counts as new.
+    private func unreadCount(for row: CommunityRow) -> Int? {
+        guard let repository, let descriptor = row.descriptorEntryId,
+              !descriptor.isEmpty,
+              let projection = try? repository.projectNewswire(
+                  spaceDescriptorEntryID: descriptor)
+        else { return nil }
+        let posts = (projection.openWire + projection.frontPage)
+            .reduce(into: [String: SeenPostRef]()) { seen, post in
+                seen[post.entryId] = SeenPostRef(
+                    entryID: post.entryId, taiJ2000Micros: post.taiJ2000Micros)
+            }
+        return NewswireUnread(
+            posts: Array(posts.values),
+            cursor: seenCursor.cursor(forCommunity: descriptor)
+        ).count
     }
 
     /// Opens the Level-1 community chooser (Command-K / the community-name control).
@@ -1368,8 +1446,6 @@ public final class RiotAppModel: ObservableObject {
         relaySyncError = nil
         defer { isRelaySyncing = false }
 
-        let nodeId = AnchorRelayDefaults.relayNodeId
-        let ticket = AnchorRelayDefaults.communityTicket
         let now = UInt64(Date().timeIntervalSince1970)
         // The DURABLE profile handle (Sendable), so the blocking network leg runs
         // off the main actor while importing into the PERSISTED store.
@@ -1380,10 +1456,8 @@ public final class RiotAppModel: ObservableObject {
         do {
             outcome = try await Task.detached {
                 let net = try bindNetRuntime()
-                return try net.syncWithAnchor(
+                return try net.syncWithNextRelay(
                     profile: durableProfile,
-                    anchorHint: nodeId,
-                    ticketBytes: ticket,
                     nowUnix: now
                 )
             }.value
@@ -1860,7 +1934,7 @@ public final class RiotAppModel: ObservableObject {
         case .NotSpaceOrganizer:
             return "Only the organizer of this space can turn an app on here."
         default:
-            return String(describing: error)
+            return PlainFailureText.plain(for: error)
         }
     }
 
@@ -2142,9 +2216,10 @@ public final class RiotAppModel: ObservableObject {
         do {
             try operation()
             errorMessage = nil
+            errorTechnicalDetails = nil
         } catch {
             onFailure?()
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
 

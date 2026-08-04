@@ -69,6 +69,20 @@ public enum ReactionKind: String, CaseIterable, Equatable, Hashable, Sendable, I
         case .grief: "Grief"
         }
     }
+
+    /// The emoji the toggle draws instead of the word. PRESENTATION ONLY — the
+    /// wire vocabulary stays the closed integer-tagged set core admits, so this
+    /// mapping can change without touching a payload, a tally, or sync. Free-form
+    /// emoji stay out of the record (see `NewsReactionV1`); these four are a
+    /// rendering of the four kinds, not a widening of them.
+    public var glyph: String {
+        switch self {
+        case .support: "🤝"
+        case .solidarity: "✊"
+        case .important: "❗️"
+        case .grief: "🕯️"
+        }
+    }
 }
 
 // MARK: - Closed editorial field table
@@ -784,7 +798,7 @@ public enum NewswireWireCopy {
     public static let offlineTitle = "Updates unavailable"
     public static let offlineMessage =
         "This community's wire is offline or has not synced yet. What you already have is still here."
-    public static let pendingSyncTitle = "Waiting for the first sync"
+    public static let pendingSyncTitle = "Waiting for the first posts"
     public static let pendingSyncMessage =
         "You've joined this community, but no posts have arrived yet. They appear once a peer or seed connects. Rejoin with a link, or sync with a peer nearby."
 }
@@ -812,7 +826,7 @@ public enum NewswireWireForwardAction: String, Equatable, Sendable, CaseIterable
         case .retry: "Try again"
         case .postFirstUpdate: "Post the first update"
         case .rejoinWithLink: "Rejoin with a link"
-        case .syncWithPeer: "Sync with a peer"
+        case .syncWithPeer: "Get updates from someone nearby"
         }
     }
 
@@ -1234,7 +1248,7 @@ public final class NewswireSurfaceModel: ObservableObject {
                     ReactionFailure(
                         kind: .retryablePersistence,
                         publicCode: "reaction_projection_refresh",
-                        message: "Reaction saved. Count will update when the wire refreshes."),
+                        message: "Saved. The count updates when new posts arrive."),
                     .projectionRefresh
                 )
             case let .rejected(failure):
@@ -1285,6 +1299,20 @@ public final class NewswireSurfaceModel: ObservableObject {
             case .capacity, .clock:
                 disabledReactionKeys.insert(key)
             case .retryablePersistence:
+                break
+            case .internalFault:
+                // Deliberately does NOT disable the row either. Riot broke;
+                // the post is fine and so is the person's authority over it.
+                // Greying the control out would turn our bug into their
+                // apparent permissions problem — which is exactly how a
+                // StalePreview spent a week looking like a moderation
+                // decision.
+                break
+            case .communityNotSynced:
+                // Deliberately does NOT disable the row. The community is
+                // simply not here yet; once it syncs the same tap succeeds,
+                // and greying the control out would tell the person their
+                // reaction is impossible when it is only early.
                 break
             }
             announce(failure.message, surface: surface)
@@ -1444,7 +1472,7 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// view for the pre-sync editor.
     public var editorialControlsPendingNote: String? {
         guard !spaceDescriptorEntryID.isEmpty, !isEditor, wire == .offlineStale else { return nil }
-        return "Editorial controls appear after this community's first sync."
+        return "Editorial controls appear once this community's details reach you."
     }
 
     /// Loads the collective projection. A missing descriptor id or a projection
@@ -2257,7 +2285,7 @@ struct NewswireReportDetailSheet: View {
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
-                Text("Signed by \(row.author)")
+                Text("By \(row.author)")
                     .font(.riot(.mono, size: 12, relativeTo: .caption))
                     .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
@@ -2478,7 +2506,7 @@ private struct EditorialActionSheet: View {
         if case let .success(review) = model.review(targetEntryID: target.entryID) {
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Review before signing")
+                    Text("Review before posting")
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .textCase(.uppercase)
                         .tracking(1)
@@ -2507,7 +2535,7 @@ private struct EditorialActionSheet: View {
             if case .success = model.review(targetEntryID: target.entryID) { return true }
             return false
         }()
-        Button("Sign and post") {
+        Button("Post this") {
             if case .signed = model.sign(targetEntryID: target.entryID) {
                 onSigned()
             }
@@ -2561,8 +2589,14 @@ private struct NewswireCommentComposeSheet: View {
                     Text("Your reply")
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                    TextField("Your reply", text: $text, axis: .vertical)
+                    // SwiftUI draws a TextField's title as its PLACEHOLDER while
+                    // the field is empty, so passing "Your reply" here printed
+                    // the same words twice — once as the caption above, once
+                    // inside the box. The caption is the visible label; this
+                    // field carries the name only for assistive technology.
+                    TextField("", text: $text, axis: .vertical)
                         .font(.riot(.body, size: 15, relativeTo: .body))
+                        .accessibilityLabel("Your reply")
                         .accessibilityIdentifier("comment-body")
                 }
                 Button("Reply") {

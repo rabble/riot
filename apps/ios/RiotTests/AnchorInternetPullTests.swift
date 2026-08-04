@@ -65,9 +65,9 @@ final class AnchorRelayFailureTests: XCTestCase {
 /// DEPLOYED anchor relay over the internet.
 ///
 /// This exercises the full net FFI surface end-to-end from the iOS SIMULATOR:
-/// `bindNetRuntime()` binds an ephemeral follower iroh endpoint + tokio runtime
-/// inside the staticlib, and `syncWithAnchor(...)` dials the live relay by its
-/// direct node address, runs the gated `riot/sync/2` ReadCommitted session,
+/// bindNetRuntime binds an ephemeral follower iroh endpoint + tokio runtime
+/// inside the staticlib, and syncWithNextRelay reads the live relay from the
+/// durable profile registry before running the gated ReadCommitted session,
 /// verifies every served entry through the canonical gate, and imports the
 /// store-admissible ones into a fresh in-memory profile.
 ///
@@ -88,6 +88,13 @@ final class AnchorInternetPullTests: XCTestCase {
         // has never seen this community. The pull is the only thing that can put
         // entries into it.
         let profile = try openLocalProfile()
+        try profile.addRelay(
+            relay: RelayRecord(
+                nodeId: AnchorRelayDefaults.relayNodeId,
+                ticketBytes: ticket,
+                lastAnsweredUnixSeconds: nil
+            )
+        )
 
         // Bind the FFI-owned iroh endpoint + tokio runtime (ephemeral follower).
         let net = try bindNetRuntime()
@@ -96,10 +103,8 @@ final class AnchorInternetPullTests: XCTestCase {
 
         let outcome: AnchorSyncOutcome
         do {
-            outcome = try net.syncWithAnchor(
+            outcome = try net.syncWithNextRelay(
                 profile: profile,
-                anchorHint: AnchorRelayDefaults.relayNodeId,
-                ticketBytes: ticket,
                 nowUnix: now
             )
         } catch let error as AnchorSyncError {
@@ -152,5 +157,56 @@ final class AnchorInternetPullTests: XCTestCase {
                 "namespace \(ns.namespaceId) refused: \(ns.refusal ?? "")"
             )
         }
+    }
+}
+
+/// Pointing a build at a LOCAL anchor. The deployed relay's NodeId and ticket are
+/// baked in; a developer verifying against a loopback `demo_anchor` needs to
+/// substitute BOTH, because a local hint carrying the deployed relay's ticket
+/// dials a host that never committed that site and is refused.
+final class AnchorRelayOverrideTests: XCTestCase {
+    func testAbsentEnvironmentKeepsTheBakedDeployedRelay() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([:])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testBothOverridesTogetherPointAtTheLocalAnchor() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "aa11@127.0.0.1:50842",
+            "RIOT_ANCHOR_TICKET_HEX": "8302",
+        ])
+
+        XCTAssertEqual(resolved.hint, "aa11@127.0.0.1:50842")
+        XCTAssertEqual(resolved.ticketHex, "8302")
+    }
+
+    func testAHintWithoutATicketIsIgnoredRatherThanDialedWithTheDeployedTicket() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "aa11@127.0.0.1:50842"
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testATicketWithoutAHintIsIgnored() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_TICKET_HEX": "8302"
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testEmptyOverridesAreTreatedAsAbsent() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "",
+            "RIOT_ANCHOR_TICKET_HEX": "",
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
     }
 }

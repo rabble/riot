@@ -22,7 +22,7 @@ use riot_core::profile::resolver::{key_tag, resolve_display_names, sanitize_disp
 
 use crate::mobile_api::{AlertCertainty, AlertSeverity, AlertUrgency, MobileError, MobileProfile};
 use crate::mobile_state::{hex, with_active};
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 /// A signed newswire record returned to the native caller: the entry ID
 /// (hex) and the raw signed bytes suitable for sync, sharing, or gateway
@@ -750,25 +750,47 @@ fn import_signed_newswire(
     signed: &SignedNewswireRecord,
 ) -> Result<NewswireSignedRecord, MobileError> {
     let bundle_bytes = riot_core::import::encode_bundle(std::slice::from_ref(&signed.signed))
-        .map_err(|_| MobileError::Internal)?;
-    crate::mobile_state::ensure_complete_sync_inventory(profile)?;
+        .map_err(|error| {
+            warn!(target: "riot::newswire", error = ?error, "encode_bundle failed -> Internal");
+            MobileError::Internal
+        })?;
+    // STEP MARKERS. Each of these propagates a MobileError with `?` and none of
+    // them logged, so a failed reply arrived at Swift as a bare `Internal` with
+    // no way to tell which step produced it. Name the step at the point of
+    // failure; the happy path stays silent.
+    crate::mobile_state::ensure_complete_sync_inventory(profile).inspect_err(|error| {
+        warn!(target: "riot::newswire", error = ?error, step = "ensure_complete_sync_inventory", "newswire import step failed");
+    })?;
     let next_inventory = crate::mobile_state::prospective_sync_inventory(
         profile,
         std::slice::from_ref(&signed.signed),
-    )?;
+    )
+    .inspect_err(|error| {
+        warn!(target: "riot::newswire", error = ?error, step = "prospective_sync_inventory", "newswire import step failed");
+    })?;
     profile.preview = None;
     profile.plan = None;
     let preview =
-        crate::mobile_state::inspect_core(&profile.store, &bundle_bytes, "local-newswire-sign")?;
+        crate::mobile_state::inspect_core(&profile.store, &bundle_bytes, "local-newswire-sign")
+            .inspect_err(|error| {
+                warn!(target: "riot::newswire", error = ?error, step = "inspect_core", "newswire import step failed");
+            })?;
     let plan = preview.plan_all().map_err(map_core_error_inner)?;
     let effects = plan.preflight_effects().map_err(map_core_error_inner)?;
 
-    let predicted_live_ids = crate::mobile_state::active_namespace_live_ids(profile)?;
+    let predicted_live_ids =
+        crate::mobile_state::active_namespace_live_ids(profile).inspect_err(|error| {
+            warn!(target: "riot::newswire", error = ?error, step = "active_namespace_live_ids", "newswire import step failed");
+        })?;
     let next_inventory_ids: Vec<_> = next_inventory
         .iter()
         .map(|entry| riot_core::willow::entry_id(&entry.entry_bytes))
         .collect();
-    validate_newswire_preflight(predicted_live_ids, next_inventory_ids, &effects)?;
+    validate_newswire_preflight(predicted_live_ids, next_inventory_ids, &effects).inspect_err(
+        |error| {
+            warn!(target: "riot::newswire", error = ?error, step = "validate_newswire_preflight", "newswire import step failed");
+        },
+    )?;
 
     use riot_core::session::CommitOutcome;
     match plan.commit().map_err(map_core_error_inner)? {
@@ -777,8 +799,20 @@ fn import_signed_newswire(
         }
         CommitOutcome::NoChanges(duplicate) => {
             if !duplicate.all_entry_ids_live() {
+                // The record was admitted as a DUPLICATE, but the store does
+                // not hold every entry id it claims to duplicate. Reaching here
+                // is what a person sees as "That reply was not accepted" with
+                // no further explanation, so name it.
+                warn!(
+                    target: "riot::newswire",
+                    "commit returned NoChanges and not all duplicate entry ids are live -> Internal"
+                );
                 return Err(MobileError::Internal);
             }
+            debug!(
+                target: "riot::newswire",
+                "commit returned NoChanges; all duplicate entry ids live (record already held)"
+            );
         }
     }
     Ok(NewswireSignedRecord {
@@ -1070,10 +1104,28 @@ fn map_newswire_error(error: riot_core::newswire::NewswireError) -> MobileError 
 }
 
 fn map_newswire_store_error(error: riot_core::newswire::NewswireStoreError) -> MobileError {
-    // Store-load failures (descriptor missing, decode error) were silently
-    // collapsed to Internal; log the precise variant for diagnostics.
-    warn!(target: "riot::newswire", error = ?error, "NewswireStoreError collapsed to MobileError::Internal");
-    MobileError::Internal
+    use riot_core::newswire::NewswireStoreError as StoreError;
+    // A community joined by reference whose descriptor has not yet arrived is
+    // the ORDINARY state of every fresh join — the sidebar calls it "Not synced
+    // yet". Collapsing it to `Internal` made the app tell people "Reactions
+    // aren't available for this post" and "That reply was not accepted",
+    // because Swift maps `Internal` into the same bucket as a permissions
+    // failure. It is not a permissions failure and it is not a bug in the
+    // record: the community simply is not here yet, and it is recoverable by
+    // waiting for a sync. `CommunityUnavailable` says exactly that.
+    match error {
+        StoreError::DescriptorNotFound => {
+            warn!(
+                target: "riot::newswire",
+                "space descriptor not held — community not synced yet; reporting CommunityUnavailable"
+            );
+            MobileError::CommunityUnavailable
+        }
+        other => {
+            warn!(target: "riot::newswire", error = ?other, "NewswireStoreError collapsed to MobileError::Internal");
+            MobileError::Internal
+        }
+    }
 }
 
 fn map_core_error_inner(error: riot_core::session::SessionError) -> MobileError {

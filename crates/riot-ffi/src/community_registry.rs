@@ -42,8 +42,10 @@ const REGISTRY_VERSION: u8 = 1;
 /// written by an older build has `RECORD_FIELDS_LEGACY` fields and still loads
 /// (the appended optional fields default to `None`) — so an upgrade never bricks
 /// on a pre-existing registry. Append new optional fields at the END and bump.
-const RECORD_FIELDS: u64 = 12;
-/// The field count before `handle_shortname` was appended (the prior current).
+const RECORD_FIELDS: u64 = 13;
+/// The field count before `carry_automatically` was appended.
+const RECORD_FIELDS_LEGACY_12: u64 = 12;
+/// The field count before `handle_shortname` was appended.
 const RECORD_FIELDS_LEGACY: u64 = 11;
 /// The field count before `fetch_url` + `require_floor` were appended.
 const RECORD_FIELDS_LEGACY_9: u64 = 9;
@@ -107,6 +109,18 @@ pub(crate) struct CommunityRecord {
     pub quarantined: bool,
     pub last_activity_unix_seconds: Option<u64>,
     pub last_sync_unix_seconds: Option<u64>,
+    /// May this community be handed to a peer WITHOUT the person asking?
+    ///
+    /// Carrying every community a device holds is what makes content saturate
+    /// during a shutdown, but working out which communities two devices share
+    /// means disclosing membership — information ABOUT a person, unlike the
+    /// content they chose to publish. A public protest wire wants maximum
+    /// spread; a legal-support group does not, and no cryptography changes
+    /// that. See docs/decisions/2026-08-04-membership-disclosure-note.md.
+    ///
+    /// `false` never blocks a DELIBERATE exchange — it governs only what may
+    /// happen without being asked.
+    pub carry_automatically: bool,
     /// For a followed composite site: the HTTPS URL to pull the owner-signed
     /// bundle from (Option C HTTP-pull), carried by the follow ticket's signed
     /// `url=` field. `None` for communities and for a ticket with no url — the
@@ -257,6 +271,8 @@ fn encode_record(e: &mut Encoder<&mut Vec<u8>>, record: &CommunityRecord) {
     encode_opt_str(e, record.fetch_url.as_deref());
     encode_opt_str(e, record.require_floor.as_deref());
     encode_opt_str(e, record.handle_shortname.as_deref());
+    e.bool(record.carry_automatically)
+        .expect("vec encoder infallible");
 }
 
 fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
@@ -268,6 +284,7 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
     let fields = d.array().map_err(|_| RegistryCorrupt)?;
     let tail = match fields {
         Some(n) if n == RECORD_FIELDS => RecordTail::Current,
+        Some(n) if n == RECORD_FIELDS_LEGACY_12 => RecordTail::PreCarryPolicy,
         Some(n) if n == RECORD_FIELDS_LEGACY => RecordTail::PreShortname,
         Some(n) if n == RECORD_FIELDS_LEGACY_9 => RecordTail::PreFetchUrl,
         _ => return Err(RegistryCorrupt),
@@ -286,9 +303,20 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
     // then handle_shortname. A record older than a given tail has none of its
     // fields (they default to None).
     let (fetch_url, require_floor, handle_shortname) = match tail {
-        RecordTail::Current => (decode_opt_str(d)?, decode_opt_str(d)?, decode_opt_str(d)?),
+        RecordTail::Current | RecordTail::PreCarryPolicy => {
+            (decode_opt_str(d)?, decode_opt_str(d)?, decode_opt_str(d)?)
+        }
         RecordTail::PreShortname => (decode_opt_str(d)?, decode_opt_str(d)?, None),
         RecordTail::PreFetchUrl => (None, None, None),
+    };
+    // A registry written before this field defaults to CARRY. That matches the
+    // public-broadcast decision and changes no behaviour on upgrade, because
+    // nothing carries a non-active community automatically yet. It does mean
+    // the surface that ships automatic carry MUST show this setting rather than
+    // let it apply silently to communities joined before it existed.
+    let carry_automatically = match tail {
+        RecordTail::Current => d.bool().map_err(|_| RegistryCorrupt)?,
+        _ => true,
     };
     Ok(CommunityRecord {
         namespace_id,
@@ -300,6 +328,7 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
         quarantined,
         last_activity_unix_seconds,
         last_sync_unix_seconds,
+        carry_automatically,
         fetch_url,
         require_floor,
         handle_shortname,
@@ -310,8 +339,10 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
 /// [`decode_record`] to decide how many trailing optional fields to read.
 #[derive(Clone, Copy)]
 enum RecordTail {
-    /// The current layout: through `handle_shortname`.
+    /// The current layout: through `carry_automatically`.
     Current,
+    /// Before `carry_automatically` was appended: through `handle_shortname`.
+    PreCarryPolicy,
     /// Before `handle_shortname` was appended: through `require_floor`.
     PreShortname,
     /// Before `fetch_url` + `require_floor`: the original 9-field record.
@@ -408,6 +439,7 @@ mod tests {
             fetch_url: None,
             require_floor: None,
             handle_shortname: None,
+            carry_automatically: true,
         }
     }
 
@@ -441,6 +473,62 @@ mod tests {
         assert!(
             record.handle_shortname.is_none(),
             "a legacy-9 record loads with handle_shortname None too"
+        );
+    }
+
+    /// BACKWARD-COMPAT: a registry written before `carry_automatically` was
+    /// appended has the 12-field layout and MUST still decode. It defaults to
+    /// CARRY, which matches the public-broadcast decision and changes no
+    /// behaviour on upgrade — nothing carries a non-active community
+    /// automatically yet. The surface that ships automatic carry must SHOW this
+    /// setting rather than let it apply silently to communities joined before
+    /// it existed.
+    #[test]
+    fn a_pre_carry_policy_record_decodes_as_carrying() {
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        e.array(RECORD_FIELDS_LEGACY_12).unwrap(); // 12 fields, pre-carry-policy
+        e.bytes(&[5u8; 32]).unwrap();
+        e.str("Pre-carry space").unwrap();
+        e.u8(Relationship::Member.to_wire()).unwrap();
+        e.null().unwrap(); // sealed_author
+        e.null().unwrap(); // descriptor_entry_id
+        e.bool(false).unwrap(); // archived
+        e.bool(false).unwrap(); // quarantined
+        e.null().unwrap(); // last_activity_unix_seconds
+        e.null().unwrap(); // last_sync_unix_seconds
+        e.null().unwrap(); // fetch_url
+        e.null().unwrap(); // require_floor
+        e.null().unwrap(); // handle_shortname
+                           // no carry_automatically field — the pre-policy layout
+
+        let mut d = Decoder::new(&buf);
+        let record = decode_record(&mut d).expect("pre-carry-policy record must still decode");
+        assert_eq!(record.namespace_id, [5u8; 32]);
+        assert!(
+            record.carry_automatically,
+            "a registry from before the field defaults to carrying"
+        );
+    }
+
+    /// The choice ROUND TRIPS. A person who marks a community manual must not
+    /// have it silently revert — this is a safety setting, not a preference.
+    #[test]
+    fn a_manual_carry_choice_round_trips_through_the_codec() {
+        let mut registry = CommunityRegistry::default();
+        let mut manual = record(4);
+        manual.carry_automatically = false;
+        registry.upsert(manual);
+        registry.upsert(record(5));
+
+        let decoded = CommunityRegistry::decode(&registry.encode()).expect("round trip");
+        assert!(
+            !decoded.find(&[4; 32]).expect("present").carry_automatically,
+            "manual stays manual"
+        );
+        assert!(
+            decoded.find(&[5; 32]).expect("present").carry_automatically,
+            "and does not bleed into the other community"
         );
     }
 
@@ -527,14 +615,17 @@ mod tests {
             assert_eq!(Relationship::from_wire(r.to_wire()), Some(r));
         }
         assert_eq!(Relationship::from_wire(5), None);
-        // The record shape grew (fetch_url + require_floor, then handle_shortname)
-        // but the wire is still decoded TOLERANTLY (legacy 9- and 11-field records
-        // load), so no REGISTRY_VERSION bump was needed — that is the property this
-        // guards.
+        // The record shape grew four times (fetch_url + require_floor, then
+        // handle_shortname, then carry_automatically) but the wire is still
+        // decoded TOLERANTLY — legacy 9-, 11- and 12-field records all load —
+        // so no REGISTRY_VERSION bump was ever needed. That is the property
+        // this guards, and why these counts are pinned: appending a field
+        // should be a deliberate act that updates this list, not a silent one.
         assert_eq!(REGISTRY_VERSION, 1);
         assert_eq!(RECORD_FIELDS_LEGACY_9, 9);
         assert_eq!(RECORD_FIELDS_LEGACY, 11);
-        assert_eq!(RECORD_FIELDS, 12);
+        assert_eq!(RECORD_FIELDS_LEGACY_12, 12);
+        assert_eq!(RECORD_FIELDS, 13);
     }
 
     #[test]

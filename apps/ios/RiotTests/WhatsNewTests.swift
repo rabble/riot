@@ -275,3 +275,94 @@ final class NewswireUnreadModelTests: XCTestCase {
         XCTAssertEqual(b.unread.count, 1)
     }
 }
+
+/// The community list speaks from the reader's side, not the transport's.
+/// "Not synced yet" / "Synced 5 minutes ago" answered a question nobody asks;
+/// what someone opens Riot wanting to know is whether their people have said
+/// anything.
+final class CommunityWhatsNewTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private func secondsAgo(_ seconds: TimeInterval) -> UInt64 {
+        UInt64(now.timeIntervalSince1970 - seconds)
+    }
+
+    func testUnreadReportsLeadTheLine() {
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 3, syncFreshnessUnixSeconds: secondsAgo(30),
+                pendingFirstSync: false, now: now),
+            "3 new reports")
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 1, syncFreshnessUnixSeconds: secondsAgo(30),
+                pendingFirstSync: false, now: now),
+            "1 new report", "one report is singular")
+    }
+
+    func testNothingNewReassuresWithoutProtocolVocabulary() {
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 0, syncFreshnessUnixSeconds: secondsAgo(10),
+                pendingFirstSync: false, now: now),
+            "Nothing new · up to date")
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 0, syncFreshnessUnixSeconds: secondsAgo(7_200),
+                pendingFirstSync: false, now: now),
+            "Nothing new · up to date 2 hours ago")
+    }
+
+    /// An uncounted community must not be reported as "nothing new" — that is a
+    /// promise the caller cannot keep. It says only what it knows.
+    func testAnUncountedCommunityDoesNotClaimNothingIsNew() {
+        let line = CommunityWhatsNew.line(
+            unread: nil, syncFreshnessUnixSeconds: secondsAgo(300),
+            pendingFirstSync: false, now: now)
+        XCTAssertEqual(line, "Up to date 5 minutes ago")
+        XCTAssertFalse(line.contains("Nothing new"))
+    }
+
+    /// A community that has never heard from anyone says so in terms of PEOPLE,
+    /// and names something the reader can act on — meeting someone who has it —
+    /// rather than a transport state they cannot influence.
+    func testNeverHeardFromAnyoneIsHonestAndActionable() {
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: nil, syncFreshnessUnixSeconds: nil,
+                pendingFirstSync: true, now: now),
+            "Waiting to hear from anyone")
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 0, syncFreshnessUnixSeconds: nil,
+                pendingFirstSync: false, now: now),
+            "Waiting to hear from anyone",
+            "no freshness stamp at all is the same situation")
+    }
+
+    /// Pending-first-sync wins over a stale unread count: a community whose
+    /// content has not arrived cannot have unread reports.
+    func testPendingFirstSyncOutranksAnyCount() {
+        XCTAssertEqual(
+            CommunityWhatsNew.line(
+                unread: 5, syncFreshnessUnixSeconds: nil,
+                pendingFirstSync: true, now: now),
+            "Waiting to hear from anyone")
+    }
+
+    /// No line ever uses the transport's vocabulary.
+    func testTheLineNeverSaysSynced() {
+        for unread in [nil, 0, 4] as [Int?] {
+            for freshness in [nil, secondsAgo(30), secondsAgo(90_000)] as [UInt64?] {
+                for pending in [true, false] {
+                    let line = CommunityWhatsNew.line(
+                        unread: unread, syncFreshnessUnixSeconds: freshness,
+                        pendingFirstSync: pending, now: now)
+                    XCTAssertFalse(
+                        line.lowercased().contains("sync"),
+                        "\"\(line)\" leaks protocol vocabulary")
+                    XCTAssertFalse(line.isEmpty)
+                }
+            }
+        }
+    }
+}

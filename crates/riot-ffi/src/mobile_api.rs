@@ -13,6 +13,17 @@ pub struct PublicSpace {
     pub is_public: bool,
 }
 
+/// A relay remembered by the durable profile. The NodeId is the stable relay
+/// identity used by iroh discovery; the ticket is the signed admission data
+/// needed for the next pull. The native UI may present its own name or label,
+/// but neither field needs to be shown to a person.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RelayRecord {
+    pub node_id: String,
+    pub ticket_bytes: Vec<u8>,
+    pub last_answered_unix_seconds: Option<u64>,
+}
+
 /// The verified result of parsing an `@author.<suffix>` handle. The
 /// `subspace_key_hex` is the 32-byte identity recovered from the suffix alone
 /// (self-certifying); `shortname` is the decorative human label.
@@ -63,6 +74,9 @@ pub struct CommunityRow {
     pub recent_activity_unix_seconds: Option<u64>,
     /// Most recent exchange time; drives the chooser's "sync freshness".
     pub sync_freshness_unix_seconds: Option<u64>,
+    /// May this community be handed to a peer without the person asking?
+    /// Governs automatic carry only; a deliberate exchange always works.
+    pub carry_automatically: bool,
     pub archived: bool,
     /// A corrupt/incompatible at-rest author was preserved for recovery; the
     /// community is shown but cannot be opened until repaired.
@@ -527,8 +541,86 @@ impl MobileProfile {
         crate::mobile_state::inspect_bytes(&self.inner, bytes, route)
     }
 
+    /// The bundles this device can hand onward for `namespace_id` — a community
+    /// it holds, whether or not that community is the one currently on screen.
+    ///
+    /// Lets a carrier pass along everything it holds when it meets someone,
+    /// instead of only whichever community happened to be selected. Each bundle
+    /// is scoped to exactly one namespace and fails closed unless it equals that
+    /// namespace's live set, so carrying more communities never widens what any
+    /// single peer is offered.
+    /// What to tell a peer about the communities this device carries, blinded
+    /// by a per-session nonce so membership is not disclosed in the clear.
+    ///
+    /// Both sides send one of these and match with `communitiesSharedWithPeer`,
+    /// so each learns only the INTERSECTION. The nonce must be fresh per session
+    /// and the same on both sides; derive it from both sides' contributions.
+    pub fn carry_advertisement(&self, nonce: Vec<u8>) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::carry_advertisement(&self.inner, nonce)
+    }
+
+    /// The communities this device and the peer BOTH carry, from the peer's
+    /// advertisement. A community only one side holds is never learned.
+    pub fn communities_shared_with_peer(
+        &self,
+        nonce: Vec<u8>,
+        peer_digests: Vec<String>,
+    ) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::communities_shared_with_peer(&self.inner, nonce, peer_digests)
+    }
+
+    /// Whether this community may be handed to a peer WITHOUT being asked.
+    ///
+    /// Carrying every community a device holds is what makes content saturate,
+    /// but deciding which communities two devices share means disclosing
+    /// membership — information about a person, unlike the content they chose
+    /// to publish. A public wire wants spread; a legal-support group does not.
+    ///
+    /// Marking a community manual never blocks a deliberate exchange.
+    pub fn set_community_carry_policy(
+        &self,
+        namespace_id: String,
+        carry_automatically: bool,
+    ) -> Result<(), MobileError> {
+        crate::mobile_state::set_community_carry_policy(
+            &self.inner,
+            namespace_id,
+            carry_automatically,
+        )
+    }
+
+    /// The communities that may be handed to a peer without the person asking.
+    pub fn communities_to_carry_automatically(&self) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::communities_to_carry_automatically(&self.inner)
+    }
+
+    pub fn sync_offer_for_community(
+        &self,
+        namespace_id: String,
+    ) -> Result<Vec<Vec<u8>>, MobileError> {
+        crate::mobile_state::sync_offer_for_community(&self.inner, namespace_id)
+    }
+
     pub fn open_sync_session(&self) -> Result<Arc<MobileSyncSession>, MobileError> {
         crate::mobile_state::open_sync_session(&self.inner)
+    }
+
+    // --- Durable relay registry --------------------------------------------
+
+    /// Remember a relay for future non-local pulls. Re-adding the same NodeId
+    /// refreshes its ticket and moves it to the front of next-pull selection.
+    pub fn add_relay(&self, relay: RelayRecord) -> Result<(), MobileError> {
+        crate::mobile_state::add_relay(&self.inner, relay)
+    }
+
+    /// Returns remembered relays in next-pull order, newest first.
+    pub fn list_relays(&self) -> Result<Vec<RelayRecord>, MobileError> {
+        crate::mobile_state::list_relays(&self.inner)
+    }
+
+    /// Returns the relay the registered pull should use next, if any.
+    pub fn relay_for_next_pull(&self) -> Result<Option<RelayRecord>, MobileError> {
+        crate::mobile_state::relay_for_next_pull(&self.inner)
     }
 
     // --- Multiple communities (Unit 3) ---------------------------------------

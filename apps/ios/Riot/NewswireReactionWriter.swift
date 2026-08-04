@@ -34,8 +34,18 @@ public struct ReactionWriteSnapshot: Sendable {
 public enum ReactionFailureKind: String, Sendable {
     case retryablePersistence
     case authorityOrInput
+    /// Riot itself broke — including a Rust panic caught at the FFI boundary,
+    /// which `with_active` turns into `MobileError::Internal`. Its own category
+    /// because telling someone "reactions aren't available for this post"
+    /// blames the post and reads as a moderation decision, when in fact nothing
+    /// is wrong with the post, the community, or them.
+    case internalFault
     case capacity
     case clock
+    /// The community itself has not arrived on this device yet — the sidebar
+    /// calls it "Not synced yet". Recoverable by waiting for a sync, so it is
+    /// NOT an authority failure and must not be reported as one.
+    case communityNotSynced
 }
 
 /// The only error value allowed past the writer boundary. Every field is fixed
@@ -69,10 +79,28 @@ public struct ReactionFailure: Equatable, Sendable {
                 kind: .retryablePersistence,
                 publicCode: "reaction_persistence",
                 message: "Couldn’t save your reaction. Try again.")
-        case .InvalidInput, .ObjectClosed, .StalePreview, .AppRejected,
-             .Internal, .DraftNotFound, .ImportRejected, .PreviewConsumed,
-             .PlanConsumed, .EntropyUnavailable, .NotSpaceOrganizer,
-             .LegacyProfileCannotOrganize, .CommunityUnavailable, .none:
+        // TRANSIENT SESSION STATE, NOT AUTHORITY. A concurrent import replaced
+        // the preview/plan slot mid-write; the next attempt succeeds. These
+        // spent the 2026-08-03 outage wearing the permanent-sounding authority
+        // copy, which is a large part of why three unrelated root causes were
+        // indistinguishable from each other for a week.
+        case .StalePreview, .PreviewConsumed, .PlanConsumed, .ObjectClosed:
+            self.init(
+                kind: .retryablePersistence,
+                publicCode: "reaction_stale_session",
+                message: "Couldn’t save your reaction. Try again.")
+        case .Internal, .EntropyUnavailable:
+            self.init(
+                kind: .internalFault,
+                publicCode: "reaction_internal",
+                message: "Riot hit a problem on this device. Nothing is wrong with this post — please report it if it keeps happening.")
+        case .CommunityUnavailable:
+            self.init(
+                kind: .communityNotSynced,
+                publicCode: "reaction_community_not_synced",
+                message: "This community hasn’t reached this device yet. Exchange with a member, then react.")
+        case .InvalidInput, .AppRejected, .DraftNotFound, .ImportRejected,
+             .NotSpaceOrganizer, .LegacyProfileCannotOrganize, .none:
             self.init(
                 kind: .authorityOrInput,
                 publicCode: "reaction_authority_or_input",
@@ -210,6 +238,16 @@ public actor MobileProfileReactionWriter: NewswireReactionWriting {
                 kind: kind.rawValue,
                 active: active)
         } catch {
+            // DEBUG ONLY. `ReactionFailure` deliberately collapses `Internal`,
+            // `InvalidInput`, `StalePreview` and `AppRejected` into ONE bucket
+            // with one string — correct for a shipped build, useless for a
+            // developer, because those four have entirely different causes and
+            // the person sees identical copy for all of them. Write the real
+            // variant down before it is thrown away.
+            #if DEBUG
+            Logger(subsystem: "net.protest.riot", category: "newswire-reaction")
+                .error("toggleNewswireReaction RAW: \(String(describing: error), privacy: .public)")
+            #endif
             return .rejected(ReactionFailure(error))
         }
 

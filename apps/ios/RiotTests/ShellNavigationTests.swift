@@ -549,7 +549,10 @@ final class ShellNavigationTests: XCTestCase {
     func testConnectionStartsExplicitlyOffline() {
         let model = RiotAppModel()
         XCTAssertEqual(model.connectionStatus, .offline)
-        XCTAssertEqual(model.connectionDisclosure, "Not connected")
+        // "Not connected" until #91 compacted the community flow; the shipped
+        // copy names what IS true rather than only what is absent, which is the
+        // same truthful-vocabulary rule the Nearby strings below follow.
+        XCTAssertEqual(model.connectionDisclosure, "Offline · local device only")
     }
 
     func testNearbyUsesTruthfulCompactVocabularyAndOfferedCount() {

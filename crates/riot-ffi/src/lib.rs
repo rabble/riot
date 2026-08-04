@@ -14,6 +14,7 @@ mod mobile_state;
 pub mod net;
 mod newswire_ffi;
 mod profile_ffi;
+mod relay_registry;
 mod site_ffi;
 
 pub use apps_ffi::*;

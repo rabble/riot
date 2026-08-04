@@ -152,7 +152,7 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertEqual(update.entryID, publisher.record.entryId)
         XCTAssertEqual(
             update.exchangeStatus,
-            "Saved and signed on this device. Exchange with someone nearby to share it."
+            "Saved on this device. Meet someone nearby to pass it on."
         )
         XCTAssertNil(model.errorMessage)
 
