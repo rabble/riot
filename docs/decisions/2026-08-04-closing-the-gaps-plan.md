@@ -5,6 +5,34 @@ Status: Rev 2, after a plan review gate that failed the first draft on all three
 axes (feasibility, completeness, scope). Rev 1's ordering rested on a false
 premise and is not preserved.
 
+## Product decision, 2026-08-04 (rabble)
+
+**The newswire is public broadcast. The goal is saturation — getting information
+out and spread as widely as possible. It is deliberately leaky. It is not, and
+must not be confused with, the encrypted private-groups mode.**
+
+This resolves the design questions rev 2 said were blocking item 1:
+
+- **Who may write to an anchor?** Anyone. Open publishing, as indymedia's open
+  wire was. No authorization gate on the open newswire.
+- **What stops a flood?** Nothing may stop it by authority. Flooding is a
+  CAPACITY problem (bounded stores, fair-share, eviction), not an admission
+  problem. Refusing writes to prevent abuse would defeat the point.
+- **Does accepting imply endorsement or liability?** No — an anchor carrying open
+  wire content is a carrier, not an editor. Worth writing down somewhere durable
+  before an operator is asked the question under pressure.
+
+⚠️ **Leaky CONTENT is the goal. Leaky AUTHORS is not.** These are different axes
+and it would be easy to collapse them while chasing reach. Communal authors are
+random per community and unlinkable by design; that is an author-safety property,
+not a content-secrecy one, and saturation does not require giving it up. A person
+posting from a protest wants their report everywhere and their location nowhere.
+Every reach item below must be read with that split in mind — in particular the
+stable-identity question in item 3 and the IP-exposure note.
+
+Private groups / MLS remain a separate mode and stay deferred; nothing here
+applies to them.
+
 ## The one-sentence state of the product
 
 **A post you write never leaves your phone unless another device is physically
@@ -70,24 +98,78 @@ token-gates `HostReconcileStaged` behind an `operation_id` + `namespace_token`
 (an organizer staging operation), and **refuses `ReplicaIntoStaged` outright**.
 An ordinary member publishing to a relay is a capability nobody has designed.
 
-**The design questions, which must be answered before any code:**
-- Who may write to an anchor, under what authority?
-- What stops a hostile flood, given communal spaces accept writes from anyone?
-- Does an anchor accepting a post imply endorsement, hosting liability, or
-  neither? (This is a legal and political question as much as a technical one.)
+**The design questions are now answered** (see the product decision above):
+anyone may publish, flooding is handled as capacity rather than admission, and a
+carrying anchor is a carrier and not an editor. What remains is engineering: an
+outbound mode the anchor will accept, reusing the endpoint, ticket admission and
+transport-floor gate already proven inbound.
 
 **Done when:** someone posts on a phone with nobody nearby, and someone else on a
 different network sees it.
 
-**Size:** design first, then implementation. Do not estimate before the design.
+**Size:** estimable now that the policy is settled. The anchor currently refuses
+`ReplicaIntoStaged` outright, so this is a serve-side change plus an FFI dial,
+not a token-gated organizer flow.
 
-## 2. The 64-record ceiling
+## 2. A device carries only the community you are looking at
 
-`MAX_SYNC_IDS = 64` per namespace, counting records of every kind — descriptor,
-posts, comments, reactions, profile cards. It refuses **writes** (offline
-included), **nearby sync**, and any future peer sync. A tenants union reaches it
-in a week; reactions are the highest-frequency write and each tap is a permanent
-record (see 8).
+`open_sync_session` builds ONE session for the ACTIVE namespace, from the active
+community's inventory. Nothing iterates joined communities. So a phone holding a
+tenants union, a mutual aid network and a protest wire passes along only whichever
+happens to be selected when it meets someone.
+
+For a saturation goal this is the single biggest miss: every device is a carrier
+for everything it holds, and today it behaves as a carrier for one thing at a
+time, chosen by what is on screen. Sneakernet propagation — the property that
+makes this work during a shutdown — is mostly not happening.
+
+**Done when:** two devices that meet exchange everything they both hold and are
+entitled to, without anyone selecting a community first.
+
+⚠️ This must not widen what a peer is offered ACROSS a community boundary: the
+`inventory_ids == live_ids` equality guard is marked LOAD-BEARING for exactly
+that isolation. Carrying more communities means more sessions, not a wider
+inventory in one session.
+
+## 3. The 64-record ceiling
+
+**64 is not a Willow limit, and it contradicts what Willow is for.** Willow is
+designed for large stores reconciled by 3D range fingerprints with recursive
+splitting — cost proportional to DIFFERENCES, not to store size. Scale is the
+point of the data model. Nobody should read this ceiling as inherited from the
+protocol Riot is built on; it is the opposite of it.
+
+What happened is that `willow25` implements no reconciliation at all — the string
+`fingerprint` appears **zero** times in the crate — so Riot hand-rolled
+`org.riot.conference-sync/1`, which puts the COMPLETE entry-id list in one
+`Summary` frame with no paging and no rounds. 64 is simply how many ids that
+frame is allowed to carry.
+
+And it is placeholder-grade even for that naive protocol: 64 ids × 32 bytes is
+2 KB against a `MAX_SYNC_FRAME_BYTES` of 8 MB — **0.02% of the frame it is
+allowed to use**. The same frame could carry ~262,000 ids.
+
+`MAX_SYNC_IDS = 64` is per namespace and counts records of every kind —
+descriptor, posts, comments, reactions, profile cards. It refuses **writes**
+(offline included), **nearby sync**, and any future peer sync. A tenants union
+reaches it in a week; reactions are the highest-frequency write and each tap is a
+permanent record (see 12).
+
+**Two separable problems, and only one is hard:**
+
+1. *The number.* Raising it is a contract amendment (`fixtures/manifest.json` +
+   `crates/xtask/src/main.rs`) and buys orders of magnitude — but it lands on the
+   next wall almost immediately: `MAX_STORE_ENTRIES = 1024`, then an unlocated
+   quadratic that makes 12,000 entries take 444 seconds to write
+   (`docs/decisions/2026-08-03-store-scaling-status.md`). Expect a few thousand
+   records from this, not a city newswire.
+2. *The protocol.* Paged frames, then fingerprint range reconciliation — the
+   actual Willow design. `willow25` does not provide it, so it must be built,
+   arguably upstream rather than in Riot.
+
+Do 1 to stop the bleeding, having first instrumented the write path so the
+quadratic is found rather than guessed at. Do 2 to make store size stop
+mattering.
 
 The proposed fix already exists and went through the design gate:
 `docs/superpowers/specs/2026-08-03-area-scoped-windowed-sync-design.md`. It came
@@ -98,7 +180,7 @@ tombstone silently un-redacts content).
 **Done when:** a community can hold a year of ordinary use without refusing a
 write.
 
-## 3. Phone-to-phone directly
+## 4. Phone-to-phone directly
 
 `riot-transport` has `sync_accept` and `accept_with_router`; grep for either in
 `crates/riot-ffi/src/` returns **zero**. `NetRuntime` is documented as *"a pure
@@ -110,8 +192,11 @@ dialer"*. What this actually costs:
   anywhere across NAT". *"Different cities"* and *"no relay reachable"* cannot
   both hold.
 - **Identity conflict.** Each bind mints a **fresh ephemeral NodeId** by design.
-  A dialable peer needs a stable one. That contradicts the committed
-  unlinkability posture and is a design decision, not a code change.
+  A dialable peer needs a stable one. Given the public-broadcast decision, a
+  stable TRANSPORT identity is likely acceptable — but it must not become a
+  stable AUTHOR identity: the per-community random author is what keeps a person
+  from being linked across communities, and it is independent of the NodeId a
+  socket uses. Keep them separate deliberately, and write down why.
 - **A phone cannot currently tell anyone its own NodeId** — `NetRuntime::node_id`
   is not exported over uniffi.
 - **iOS gives a backgrounded app no listening UDP socket**, so both people must
@@ -122,21 +207,21 @@ dialer"*. What this actually costs:
   iroh. And `sync/1` caps at 64 (see 2).
 
 **Done when (split, because one half is achievable much sooner):**
-- **3a** — two profiles on the same LAN reconcile bidirectionally over
+- **4a** — two profiles on the same LAN reconcile bidirectionally over
   direct-addressed QUIC with **no Riot anchor** in the path.
-- **3b** — two profiles on different networks reconcile with **no Riot anchor**,
+- **4b** — two profiles on different networks reconcile with **no Riot anchor**,
   using iroh's public relay + discovery for rendezvous and hole-punching only.
   This is the honest form of the argument: it removes *Riot's* relay as a single
   point of failure and surveillance; the rendezvous server sees connection
   metadata but no content.
 
-**Size:** 3a ~1–2 weeks. 3b 4–8 weeks, and blocked on the identity decision.
+**Size:** 4a ~1–2 weeks. 4b 4–8 weeks, and blocked on the identity decision.
 
-⚠️ Item 3 exposes each phone's IP to every peer it dials, which the relay
+⚠️ Item 4 exposes each phone's IP to every peer it dials, which the relay
 currently masks. `docs/discovery-options.md` reasons carefully about link-local
 presence leaks; routable dialing is owed the same rigor before it ships.
 
-## 4. Correcting the record
+## 5. Correcting the record
 
 `NewswireEditorial.swift:687` — `EditorialActionKind.allCases.filter { $0 != .retract }`.
 Retract is implemented in core, modelled in Swift, and **deliberately filtered
@@ -151,7 +236,7 @@ not author-gated — should an author be able to correct their own post?
 **Size:** small, if the gating question is answered. Mostly surfacing existing
 core.
 
-## 5. Turn the test suite on in CI
+## 6. Turn the test suite on in CI
 
 `apple-compile-gate.yml` builds and never tests. Four separate stale-test
 failures were found on 2026-08-03, from four different PRs, each silently red
@@ -171,7 +256,7 @@ since it landed — the same shape as the outage.
 - **Land report-only first**, or fix 9 and 10 before flipping to required —
   otherwise the gate is red on day one.
 
-## 6. Android is a platform behind
+## 7. Android is a platform behind
 
 `grep -rl "syncWithAnchor|syncWithNextRelay|bindNetRuntime" apps/android/app/src/main`
 → **zero**. Android is BLE + Wi-Fi only, with no relay or anchor surface at all.
@@ -181,7 +266,7 @@ loads libriot_ffi.so"*; `androidTest/` instrumentation runs nowhere.
 Every reach item above is two-platform work costed for one. Decide explicitly
 whether Android trails or ships in step.
 
-## 7. "Did it reach anyone?"
+## 8. "Did it reach anyone?"
 
 Rev 1's premise was false: `ImportAcceptance.accepted_entry_ids`
 (`mobile_state.rs:1538-1543`) is built from the **local** commit and never
@@ -200,7 +285,7 @@ used under surveillance.
 
 **Size:** 3–5 days once there is an outbound path to acknowledge.
 
-## 8. Field failure
+## 9. Field failure
 
 Nothing in rev 1 covered what a person sees with no relay and no peers, an
 interrupted sync mid-bundle, backgrounding or battery death during sync, or
@@ -208,7 +293,7 @@ interrupted sync mid-bundle, backgrounding or battery death during sync, or
 counterpart. For an app whose users' phones get seized, the seizure path deserves
 at least a line, even if that line is "done, here is the test."
 
-## 9 & 10. The two red tests
+## 10 & 11. The two red tests
 
 `AnchorProtocolVectorTests` — a `CommunityListingV1` vector expects 19 fields, the
 code emits 18 (a steward/contact name). Intermittent across runs and the fixture
@@ -216,20 +301,20 @@ embeds timestamps, so rule out a time-dependent fixture first.
 
 `CompactReactionBarNativeSnapshotTests` ×2 — `NSApplication has not been created
 yet`. These are the tests the compact-reaction design named as the guard against
-exactly the glyph drift that shipped (f81637ae). Both block 5 going required.
+exactly the glyph drift that shipped (f81637ae). Both block 6 going required.
 
-## 11. Reactions cost O(taps)
+## 12. Reactions cost O(taps)
 
 Every reaction and every toggle-off is a distinct unprunable sibling path, so
 on/off/on leaves three permanent records while the UI shows one. Putting identity
 coordinates in the path (`.../reactions/<parent_entry_id>/<kind>`) would let
 Willow's prefix pruning do the supersession `projection.rs` does by hand.
 
-Reclassified: this is not cosmetic debt, it is **an input to item 2** — reactions
+Reclassified: this is not cosmetic debt, it is **an input to item 3** — reactions
 are the fastest way a community reaches 64. Record-family migration touching five
 sites including the non-compiler-forced `store.rs` prefix scan.
 
-## 12. Store scaling below the sync cap
+## 13. Store scaling below the sync cap
 
 `docs/decisions/2026-08-03-store-scaling-status.md`. **Do not raise a cap and do
 not propose a fix from reading the code** — six predictions in one day, six
@@ -255,13 +340,19 @@ Each is built-or-designed and unreachable; none is planned now:
 
 ## Order
 
-1. **Design** item 1 (a post leaving the phone). It is the product; it is a
-   design question; nothing else changes what a person can do as much.
-2. **In parallel, cheap and unblocking:** item 4 (retract) and item 5 CI
-   report-only, with 9 and 10 as its prerequisites.
-3. **Then** item 2 (the 64 ceiling), since it caps everything item 1 unlocks.
-4. **Then** 3a, then 7, then 3b.
-5. **Then** 6 (Android parity), 8, 11, 12.
+Reordered around saturation, per the 2026-08-04 product decision.
+
+1. **Item 1 — a post can leave the phone.** Policy is settled; this is now
+   engineering, and nothing else changes what a person can do as much.
+2. **Item 2 — carry every community you hold, not just the selected one.**
+   The cheapest large multiplier on reach, and pure sneakernet value during a
+   shutdown.
+3. **Item 3 — the 64-record ceiling.** It caps everything 1 and 2 unlock; you
+   cannot saturate anything with 64 records.
+4. **In parallel, cheap:** item 5 (retract) and item 6 CI report-only, with 10
+   and 11 as prerequisites.
+5. **Then** 4a (LAN peer dial), then 8 (reach signal), then 4b (cross-NAT).
+6. **Then** 7 (Android parity), 9 (field failure), 12, 13.
 
 ## Rules carried forward
 
