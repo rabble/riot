@@ -1546,6 +1546,42 @@ pub(crate) fn accept_plan(
     })
 }
 
+/// The entries this device can hand onward for `namespace_id`, whether or not
+/// that community is the one on screen.
+///
+/// `open_sync_session` scopes itself to `profile.space`, and nothing iterates
+/// the joined communities, so a device carrying three communities offered only
+/// whichever was selected when it met someone. During a shutdown that is most
+/// of the propagation not happening: every device is supposed to be a carrier
+/// for everything it holds.
+///
+/// Isolation is UNCHANGED and is why this delegates rather than reaching into
+/// `sync_inventory`: `build_followed_site_offer` derives the offer from the
+/// durable store scoped to exactly one namespace and fails closed unless it
+/// equals that namespace's live set — the same exact-equality discipline
+/// `install_sync_inventory` applies to the active community, applied per
+/// namespace. Carrying more communities means more offers, each still scoped to
+/// one namespace, never a wider offer in one session.
+///
+/// Durable stores only; a memory profile has no signed form to hand on.
+pub(crate) fn sync_offer_for_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+) -> Result<Vec<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        let target = parse_entry_id(&namespace_id)?;
+        // Held-community check: never build an offer for a namespace this device
+        // has not joined, even if its store happens to hold entries for it.
+        if profile.registry.find(&target).is_none() {
+            return Err(MobileError::CommunityUnavailable);
+        }
+        let offer = build_followed_site_offer(profile, &target)?;
+        encode_bundle(&offer)
+            .map(|bytes| vec![bytes])
+            .map_err(|_| MobileError::SessionLimit)
+    })
+}
+
 pub(crate) fn open_sync_session(
     inner: &Arc<Mutex<ProfileState>>,
 ) -> Result<Arc<MobileSyncSession>, MobileError> {

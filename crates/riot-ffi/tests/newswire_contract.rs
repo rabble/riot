@@ -1693,3 +1693,225 @@ fn a_relay_pull_stamps_the_communitys_sync_freshness() {
          device, however many syncs have succeeded"
     );
 }
+
+// --- Carrying every community you hold, not just the one on screen ---------
+//
+// `open_sync_session` scopes itself to `profile.space` — the ACTIVE community —
+// and nothing iterates the joined ones. So a phone holding a tenants union, a
+// mutual aid network and a protest wire passes along only whichever happens to
+// be selected when it meets someone. For a tool whose reach depends on devices
+// carrying content to each other during a shutdown, that is most of the
+// propagation not happening.
+
+/// Joins `title` and carries its descriptor + post in, leaving it ACTIVE.
+fn join_and_carry(
+    reader: &riot_ffi::MobileProfile,
+    reference: &riot_ffi::NewswireShareReference,
+    title: &str,
+    key: Vec<u8>,
+    bytes: &[Vec<u8>],
+) {
+    reader
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: title.into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            key,
+        )
+        .expect("join community");
+    for signed in bytes {
+        carry(reader, signed.clone());
+    }
+}
+
+#[test]
+fn a_device_can_offer_a_community_that_is_not_the_active_one() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("carrier.db").to_string_lossy().to_string();
+    let key = vec![11u8; 32];
+
+    // Two separate communities, each with a post, published by two authors.
+    let union_author = open_local_profile().expect("author profile");
+    let union_space = union_author
+        .create_newswire_space(space_input("Riverside Tenants Union"))
+        .expect("create space");
+    let union_post = union_author
+        .create_newswire_post(post_input(&union_space.entry_id, "Rent strike Thursday"))
+        .expect("create post");
+    let union_ref = union_author
+        .newswire_share_reference(union_space.entry_id.clone())
+        .expect("share reference");
+
+    let wire_author = open_local_profile().expect("author profile");
+    let wire_space = wire_author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let wire_post = wire_author
+        .create_newswire_post(post_input(&wire_space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let wire_ref = wire_author
+        .newswire_share_reference(wire_space.entry_id.clone())
+        .expect("share reference");
+
+    // One carrier device holds BOTH. The wire is joined second, so it is active.
+    let carrier = open_local_profile_with_database(db_path).expect("carrier profile");
+    join_and_carry(
+        &carrier,
+        &union_ref,
+        "Riverside Tenants Union",
+        key.clone(),
+        &[
+            union_space.signed_bytes.clone(),
+            union_post.signed_bytes.clone(),
+        ],
+    );
+    join_and_carry(
+        &carrier,
+        &wire_ref,
+        "River City Wire",
+        key,
+        &[
+            wire_space.signed_bytes.clone(),
+            wire_post.signed_bytes.clone(),
+        ],
+    );
+
+    let active = carrier
+        .active_community()
+        .expect("active community")
+        .expect("a community is active");
+    assert_eq!(
+        active.namespace_id, wire_ref.namespace_id,
+        "the wire was joined last, so it is the one on screen"
+    );
+
+    // The tenants union is held but NOT on screen. A carrier must still be able
+    // to hand it onward — that is the whole sneakernet property.
+    let offer = carrier
+        .sync_offer_for_community(union_ref.namespace_id.clone())
+        .expect("a held community can be offered even when it is not active");
+    assert!(
+        !offer.is_empty(),
+        "a device carrying a community must be able to offer it without the \
+         person selecting it first"
+    );
+}
+
+/// Carrying more communities must never widen what any ONE peer is offered.
+/// This is the isolation property `install_sync_inventory` guards for the
+/// active community, asserted here per namespace: a carrier holding two
+/// communities offers each separately, and neither offer contains the other's
+/// entries.
+#[test]
+fn carrying_two_communities_never_mixes_them_into_one_offer() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("isolation.db")
+        .to_string_lossy()
+        .to_string();
+    let key = vec![13u8; 32];
+
+    let a_author = open_local_profile().expect("author profile");
+    let a_space = a_author
+        .create_newswire_space(space_input("Riverside Tenants Union"))
+        .expect("create space");
+    let a_post = a_author
+        .create_newswire_post(post_input(&a_space.entry_id, "Rent strike Thursday"))
+        .expect("create post");
+    let a_ref = a_author
+        .newswire_share_reference(a_space.entry_id.clone())
+        .expect("share reference");
+
+    let b_author = open_local_profile().expect("author profile");
+    let b_space = b_author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let b_post = b_author
+        .create_newswire_post(post_input(&b_space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let b_ref = b_author
+        .newswire_share_reference(b_space.entry_id.clone())
+        .expect("share reference");
+
+    let carrier = open_local_profile_with_database(db_path).expect("carrier profile");
+    join_and_carry(
+        &carrier,
+        &a_ref,
+        "Riverside Tenants Union",
+        key.clone(),
+        &[a_space.signed_bytes.clone(), a_post.signed_bytes.clone()],
+    );
+    join_and_carry(
+        &carrier,
+        &b_ref,
+        "River City Wire",
+        key,
+        &[b_space.signed_bytes.clone(), b_post.signed_bytes.clone()],
+    );
+
+    let a_offer = carrier
+        .sync_offer_for_community(a_ref.namespace_id.clone())
+        .expect("offer for A");
+    let b_offer = carrier
+        .sync_offer_for_community(b_ref.namespace_id.clone())
+        .expect("offer for B");
+
+    // Compared by the post's own text, which rides in the payload. The
+    // `signed_bytes` of a single-entry bundle carry their own framing and do
+    // not appear verbatim inside a multi-entry bundle, so byte-containment on
+    // those would be vacuous.
+    let a_bytes = a_offer.concat();
+    let b_bytes = b_offer.concat();
+    let a_text = b"Rent strike Thursday";
+    let b_text = b"Free breakfast";
+    let _ = (&a_post, &b_post);
+
+    let contains = |haystack: &[u8], needle: &[u8]| -> bool {
+        needle.len() <= haystack.len()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle)
+    };
+
+    assert!(contains(&a_bytes, a_text), "A's offer carries A's post");
+    assert!(contains(&b_bytes, b_text), "B's offer carries B's post");
+    assert!(
+        !contains(&a_bytes, b_text),
+        "A's offer must NOT leak B's entries — carrying two communities cannot \
+         widen what a single peer is offered"
+    );
+    assert!(
+        !contains(&b_bytes, a_text),
+        "B's offer must NOT leak A's entries"
+    );
+}
+
+/// A namespace this device has not joined is never offered, even if its store
+/// holds entries for it (a followed site, a stale import). Held-community check
+/// before any offer is built.
+#[test]
+fn a_community_this_device_has_not_joined_is_never_offered() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("unjoined.db").to_string_lossy().to_string();
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    let device = open_local_profile_with_database(db_path).expect("device profile");
+    assert!(
+        matches!(
+            device.sync_offer_for_community(reference.namespace_id),
+            Err(riot_ffi::MobileError::CommunityUnavailable)
+        ),
+        "a namespace this device never joined must not be offerable"
+    );
+}

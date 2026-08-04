@@ -538,6 +538,21 @@ impl MobileProfile {
         crate::mobile_state::inspect_bytes(&self.inner, bytes, route)
     }
 
+    /// The bundles this device can hand onward for `namespace_id` — a community
+    /// it holds, whether or not that community is the one currently on screen.
+    ///
+    /// Lets a carrier pass along everything it holds when it meets someone,
+    /// instead of only whichever community happened to be selected. Each bundle
+    /// is scoped to exactly one namespace and fails closed unless it equals that
+    /// namespace's live set, so carrying more communities never widens what any
+    /// single peer is offered.
+    pub fn sync_offer_for_community(
+        &self,
+        namespace_id: String,
+    ) -> Result<Vec<Vec<u8>>, MobileError> {
+        crate::mobile_state::sync_offer_for_community(&self.inner, namespace_id)
+    }
+
     pub fn open_sync_session(&self) -> Result<Arc<MobileSyncSession>, MobileError> {
         crate::mobile_state::open_sync_session(&self.inner)
     }
