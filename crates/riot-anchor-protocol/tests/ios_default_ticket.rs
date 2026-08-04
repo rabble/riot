@@ -9,6 +9,13 @@ use riot_anchor_protocol::records::RootSignedTicketCoreEnvelopeV2;
 const EIGHTY_DAYS_SECONDS: u64 = 80 * 24 * 60 * 60;
 const NINETY_DAYS_SECONDS: u64 = 90 * 24 * 60 * 60;
 
+/// The Swift constant holding the ticket that actually ships. `communityTicketHex`
+/// is no longer it: since the `RIOT_ANCHOR_HINT` / `RIOT_ANCHOR_TICKET_HEX`
+/// override landed it is a computed `var` returning whichever ticket the running
+/// build resolved, so it carries no literal to check. The baked one does, and the
+/// baked one is what reaches a person who set no environment variables.
+const SWIFT_DECLARATION: &str = "public static let bakedCommunityTicketHex =";
+
 fn ios_default_ticket_hex() -> String {
     let app_model = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -16,13 +23,20 @@ fn ios_default_ticket_hex() -> String {
     ))
     .expect("read iOS AppModel.swift");
     let declaration = app_model
-        .split("public static let communityTicketHex =")
+        .split(SWIFT_DECLARATION)
         .nth(1)
-        .expect("communityTicketHex declaration");
+        .unwrap_or_else(|| {
+            panic!(
+                "apps/ios/Riot/AppModel.swift has no `{SWIFT_DECLARATION}`. If the baked \
+             ticket was renamed or reshaped, update SWIFT_DECLARATION here — do not \
+             delete this guard. It is the only thing checking that the ticket the app \
+             ships still decodes and still has a durable window."
+            )
+        });
     declaration
         .split('"')
         .nth(1)
-        .expect("communityTicketHex string literal")
+        .expect("baked ticket hex is a double-quoted string literal")
         .to_owned()
 }
 
