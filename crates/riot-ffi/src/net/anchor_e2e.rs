@@ -727,6 +727,68 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
         }
     });
 
+    // RED (2026-08-02): a person who pulled a community from the anchor must be
+    // able to WRITE into it. Today every write is refused with Internal, because
+    // the pull imported entries into the store without refreshing
+    // `profile.sync_inventory`, and `ensure_complete_sync_inventory` treats the
+    // resulting mismatch as fatal. Reads pass — every assertion above — while
+    // reactions and replies come back as "Reactions aren't available for this
+    // post" and "That reply was not accepted".
+    // Adopt the pulled community, exactly as a person tapping it in the app
+    // does. This is what makes it the ACTIVE space, and therefore what puts the
+    // profile into the state the field failure happens in.
+    profile
+        .join_newswire_community(
+            crate::mobile_api::PublicSpace {
+                namespace_id: wire_candidate.namespace_id.clone(),
+                title: site.wire.name.clone(),
+                is_public: true,
+            },
+            wire_candidate
+                .descriptor_entry_id
+                .clone()
+                .expect("candidate carries its descriptor"),
+            Vec::new(),
+        )
+        .expect("adopt the pulled community");
+
+    let wire_descriptor = hex(&site.wire.descriptor_entry_id);
+    let parent_post = with_store(&profile, |store| {
+        let clock = ProjectionClockV1::system().expect("projection clock");
+        let projection =
+            riot_core::newswire::project_space(store, site.wire.descriptor_entry_id, clock)
+                .expect("the pulled wire projects");
+        hex(&projection
+            .open_wire
+            .iter()
+            .chain(projection.front_page.iter())
+            .next()
+            .expect("a pulled post to write against")
+            .entry_id)
+    });
+    let reaction = profile.toggle_newswire_reaction(
+        wire_descriptor.clone(),
+        parent_post.clone(),
+        "solidarity".into(),
+        true,
+    );
+    assert!(
+        reaction.is_ok(),
+        "a community pulled from the anchor must accept a reaction, got {:?}",
+        reaction.err()
+    );
+    let reply = profile.create_newswire_comment(
+        wire_descriptor,
+        parent_post,
+        "I can bring bread.".into(),
+        "en".into(),
+    );
+    assert!(
+        reply.is_ok(),
+        "a community pulled from the anchor must accept a reply, got {:?}",
+        reply.err()
+    );
+
     drop(anchor);
     let _ = std::fs::remove_file(&anchor_db);
     let _ = std::fs::remove_file(&phone_db);

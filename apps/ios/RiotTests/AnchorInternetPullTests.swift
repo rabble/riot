@@ -159,3 +159,54 @@ final class AnchorInternetPullTests: XCTestCase {
         }
     }
 }
+
+/// Pointing a build at a LOCAL anchor. The deployed relay's NodeId and ticket are
+/// baked in; a developer verifying against a loopback `demo_anchor` needs to
+/// substitute BOTH, because a local hint carrying the deployed relay's ticket
+/// dials a host that never committed that site and is refused.
+final class AnchorRelayOverrideTests: XCTestCase {
+    func testAbsentEnvironmentKeepsTheBakedDeployedRelay() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([:])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testBothOverridesTogetherPointAtTheLocalAnchor() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "aa11@127.0.0.1:50842",
+            "RIOT_ANCHOR_TICKET_HEX": "8302",
+        ])
+
+        XCTAssertEqual(resolved.hint, "aa11@127.0.0.1:50842")
+        XCTAssertEqual(resolved.ticketHex, "8302")
+    }
+
+    func testAHintWithoutATicketIsIgnoredRatherThanDialedWithTheDeployedTicket() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "aa11@127.0.0.1:50842"
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testATicketWithoutAHintIsIgnored() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_TICKET_HEX": "8302"
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+
+    func testEmptyOverridesAreTreatedAsAbsent() {
+        let resolved = AnchorRelayDefaults.resolvedRelay([
+            "RIOT_ANCHOR_HINT": "",
+            "RIOT_ANCHOR_TICKET_HEX": "",
+        ])
+
+        XCTAssertEqual(resolved.hint, AnchorRelayDefaults.bakedRelayNodeId)
+        XCTAssertEqual(resolved.ticketHex, AnchorRelayDefaults.bakedCommunityTicketHex)
+    }
+}

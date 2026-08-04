@@ -2204,3 +2204,68 @@ fn a_manual_community_is_not_advertised() {
         "a manual community must not surface as shared, in either direction"
     );
 }
+
+/// Correcting the record is in this app's purpose, and right now there is no way
+/// to do it. `Retract` and `Tombstone` exist in the core; nothing surfaces them,
+/// and the open question is whether an author may withdraw their OWN words in a
+/// community where they hold no editorial role. They must: a person who wrote
+/// something has standing over that record regardless of who runs the wire.
+#[test]
+#[ignore = "RED: unmet requirement, not a flake. An author cannot retract their \
+own words without an editorial role — verified 2026-08-02, fails with InvalidInput. \
+create_signed_editorial_action takes (author, descriptor, action) and NO store \
+handle, so it cannot check who wrote the target entry; allowing this means either \
+passing the target's authorship into the core or gating it in the FFI where the \
+store is reachable. That is a permissions-boundary decision, so it is recorded \
+here rather than guessed at."]
+fn an_author_can_retract_their_own_reply_without_an_editorial_role() {
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let post = author
+        .create_newswire_post(post_input(&space.entry_id, "Free breakfast"))
+        .expect("create post");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    // A member with no editorial role at all.
+    let member = open_local_profile().expect("member profile");
+    member
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: "River City Wire".into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join community");
+    carry(&member, space.signed_bytes.clone());
+    carry(&member, post.signed_bytes.clone());
+
+    let reply = member
+        .create_newswire_comment(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "I said something I want to take back.".into(),
+            "en".into(),
+        )
+        .expect("member replies");
+
+    let retraction = member.create_newswire_editorial_action(NewswireEditorialActionInput {
+        space_descriptor_entry_id: space.entry_id.clone(),
+        target_entry_id: reply.entry_id.clone(),
+        kind: NewswireEditorialActionKind::Retract,
+        reason: Some("I was wrong.".into()),
+        correction_text: None,
+    });
+    assert!(
+        retraction.is_ok(),
+        "an author must be able to withdraw their own words without an editorial \
+         role, got {:?}",
+        retraction.err()
+    );
+}
