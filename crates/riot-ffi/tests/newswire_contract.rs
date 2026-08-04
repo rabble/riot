@@ -2044,3 +2044,163 @@ fn the_carry_policy_survives_a_relaunch() {
         "the row a person sees reflects the stored choice"
     );
 }
+
+// --- Finding shared communities without disclosing the rest ---------------
+
+/// Joins `title` into `device` without carrying any content — enough to list it.
+fn join_only(
+    device: &riot_ffi::MobileProfile,
+    reference: &riot_ffi::NewswireShareReference,
+    title: &str,
+    key: Vec<u8>,
+) {
+    device
+        .join_newswire_community(
+            riot_ffi::PublicSpace {
+                namespace_id: reference.namespace_id.clone(),
+                title: title.into(),
+                is_public: true,
+            },
+            reference.descriptor_entry_id.clone(),
+            key,
+        )
+        .expect("join community");
+}
+
+fn published(title: &str) -> riot_ffi::NewswireShareReference {
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input(title))
+        .expect("create space");
+    author
+        .newswire_share_reference(space.entry_id)
+        .expect("share reference")
+}
+
+#[test]
+fn two_devices_learn_the_community_they_share_and_nothing_else() {
+    let shared = published("River City Wire");
+    let only_a = published("Riverside Tenants Union");
+    let only_b = published("Legal Support");
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let a = open_local_profile_with_database(dir.path().join("a.db").to_string_lossy().to_string())
+        .expect("device A");
+    let b = open_local_profile_with_database(dir.path().join("b.db").to_string_lossy().to_string())
+        .expect("device B");
+
+    join_only(&a, &shared, "River City Wire", vec![31u8; 32]);
+    join_only(&a, &only_a, "Riverside Tenants Union", vec![31u8; 32]);
+    join_only(&b, &shared, "River City Wire", vec![32u8; 32]);
+    join_only(&b, &only_b, "Legal Support", vec![32u8; 32]);
+
+    // One session nonce, derived from both sides in the real exchange.
+    let nonce = vec![0xAB; 32];
+    let a_advert = a.carry_advertisement(nonce.clone()).expect("A advertises");
+    let b_advert = b.carry_advertisement(nonce.clone()).expect("B advertises");
+
+    let a_sees = a
+        .communities_shared_with_peer(nonce.clone(), b_advert.clone())
+        .expect("A matches B");
+    let b_sees = b
+        .communities_shared_with_peer(nonce.clone(), a_advert.clone())
+        .expect("B matches A");
+
+    assert_eq!(
+        a_sees,
+        vec![shared.namespace_id.clone()],
+        "A learns the shared one"
+    );
+    assert_eq!(
+        b_sees,
+        vec![shared.namespace_id.clone()],
+        "B learns the shared one"
+    );
+
+    // Neither advertisement discloses a namespace id in the clear.
+    for digest in a_advert.iter().chain(b_advert.iter()) {
+        assert_ne!(digest, &shared.namespace_id);
+        assert_ne!(digest, &only_a.namespace_id);
+        assert_ne!(digest, &only_b.namespace_id);
+    }
+    // And B never learns that A carries the tenants union.
+    assert!(!b_sees.contains(&only_a.namespace_id));
+    assert!(!a_sees.contains(&only_b.namespace_id));
+}
+
+/// A fresh nonce per session is what stops two encounters by the same person
+/// being correlated. The same community must advertise differently each time.
+#[test]
+fn a_different_session_nonce_produces_an_unlinkable_advertisement() {
+    let wire = published("River City Wire");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let device =
+        open_local_profile_with_database(dir.path().join("d.db").to_string_lossy().to_string())
+            .expect("device");
+    join_only(&device, &wire, "River City Wire", vec![33u8; 32]);
+
+    let monday = device.carry_advertisement(vec![1u8; 32]).expect("monday");
+    let tuesday = device.carry_advertisement(vec![2u8; 32]).expect("tuesday");
+
+    assert_eq!(monday.len(), 1);
+    assert_ne!(
+        monday, tuesday,
+        "the same community must not advertise identically across sessions, or \
+         two encounters can be linked to the same person"
+    );
+
+    // A nonce-less advertisement would be identical forever; refuse it.
+    assert!(device.carry_advertisement(Vec::new()).is_err());
+    assert!(device
+        .communities_shared_with_peer(Vec::new(), monday)
+        .is_err());
+}
+
+/// A community marked manual is not in the advertisement at all — it is never
+/// named to a peer, not even blinded, without a deliberate act.
+#[test]
+fn a_manual_community_is_not_advertised() {
+    let wire = published("River City Wire");
+    let legal = published("Legal Support");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let device =
+        open_local_profile_with_database(dir.path().join("m.db").to_string_lossy().to_string())
+            .expect("device");
+    join_only(&device, &wire, "River City Wire", vec![34u8; 32]);
+    join_only(&device, &legal, "Legal Support", vec![34u8; 32]);
+
+    let nonce = vec![7u8; 32];
+    assert_eq!(
+        device
+            .carry_advertisement(nonce.clone())
+            .expect("both")
+            .len(),
+        2
+    );
+
+    device
+        .set_community_carry_policy(legal.namespace_id.clone(), false)
+        .expect("mark manual");
+
+    let advert = device.carry_advertisement(nonce.clone()).expect("one");
+    assert_eq!(advert.len(), 1, "the manual community is not advertised");
+
+    // Even a peer that HOLDS the manual community cannot learn this device does.
+    let peer_dir = tempfile::tempdir().expect("temp dir");
+    let peer = open_local_profile_with_database(
+        peer_dir.path().join("p.db").to_string_lossy().to_string(),
+    )
+    .expect("peer");
+    join_only(&peer, &legal, "Legal Support", vec![35u8; 32]);
+    let peer_advert = peer
+        .carry_advertisement(nonce.clone())
+        .expect("peer advert");
+
+    assert!(
+        device
+            .communities_shared_with_peer(nonce, peer_advert)
+            .expect("match")
+            .is_empty(),
+        "a manual community must not surface as shared, in either direction"
+    );
+}

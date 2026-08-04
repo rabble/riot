@@ -549,6 +549,26 @@ impl MobileProfile {
     /// is scoped to exactly one namespace and fails closed unless it equals that
     /// namespace's live set, so carrying more communities never widens what any
     /// single peer is offered.
+    /// What to tell a peer about the communities this device carries, blinded
+    /// by a per-session nonce so membership is not disclosed in the clear.
+    ///
+    /// Both sides send one of these and match with `communitiesSharedWithPeer`,
+    /// so each learns only the INTERSECTION. The nonce must be fresh per session
+    /// and the same on both sides; derive it from both sides' contributions.
+    pub fn carry_advertisement(&self, nonce: Vec<u8>) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::carry_advertisement(&self.inner, nonce)
+    }
+
+    /// The communities this device and the peer BOTH carry, from the peer's
+    /// advertisement. A community only one side holds is never learned.
+    pub fn communities_shared_with_peer(
+        &self,
+        nonce: Vec<u8>,
+        peer_digests: Vec<String>,
+    ) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::communities_shared_with_peer(&self.inner, nonce, peer_digests)
+    }
+
     /// Whether this community may be handed to a peer WITHOUT being asked.
     ///
     /// Carrying every community a device holds is what makes content saturate,

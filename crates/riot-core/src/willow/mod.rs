@@ -29,8 +29,8 @@ pub use clock::{
     ClockSnapshot,
 };
 pub use digest::{
-    bundle_digest, entry_id, evidence_digest, object_digest, william3_digest, BundleDigest,
-    EntryId, EvidenceDigest, ObjectDigest,
+    bundle_digest, carry_advert_digest, entry_id, evidence_digest, object_digest, william3_digest,
+    BundleDigest, EntryId, EvidenceDigest, ObjectDigest,
 };
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
 pub use identity::{

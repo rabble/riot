@@ -1564,6 +1564,81 @@ pub(crate) fn accept_plan(
 /// one namespace, never a wider offer in one session.
 ///
 /// Durable stores only; a memory profile has no signed form to hand on.
+/// What this device tells a peer about the communities it carries, blinded by a
+/// per-session nonce so membership is not disclosed in the clear.
+///
+/// Returns one hex digest per automatically-carried community, SORTED — the
+/// order carries no information about when communities were joined. Both sides
+/// send one of these; each then matches the peer's digests against its own set
+/// with `communities_shared_with_peer`, so each learns the INTERSECTION and
+/// nothing about the rest.
+///
+/// The nonce must be fresh per session and identical on both sides; deriving it
+/// from both sides' contributions is preferred so neither party picks it alone.
+///
+/// ⚠️ The COUNT is not hidden. A peer learns how many communities you carry
+/// automatically, even for the ones it cannot identify. Padding to a fixed size
+/// would fix that and is not done here.
+pub(crate) fn carry_advertisement(
+    inner: &Arc<Mutex<ProfileState>>,
+    nonce: Vec<u8>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        if nonce.is_empty() {
+            // A fixed/empty nonce would make advertisements identical across
+            // encounters and trivially correlatable. Refuse rather than emit a
+            // linkable advertisement.
+            return Err(MobileError::InvalidInput);
+        }
+        let mut digests: Vec<String> = profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .map(|record| {
+                hex(&riot_core::willow::carry_advert_digest(
+                    &nonce,
+                    &record.namespace_id,
+                ))
+            })
+            .collect();
+        digests.sort();
+        Ok(digests)
+    })
+}
+
+/// The communities this device and the peer BOTH carry, from the peer's
+/// advertisement — the intersection, and nothing else.
+///
+/// A community the peer holds and this device does not is never learned: its
+/// digest simply matches nothing here.
+pub(crate) fn communities_shared_with_peer(
+    inner: &Arc<Mutex<ProfileState>>,
+    nonce: Vec<u8>,
+    peer_digests: Vec<String>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        if nonce.is_empty() {
+            return Err(MobileError::InvalidInput);
+        }
+        let peer: std::collections::BTreeSet<String> =
+            peer_digests.into_iter().map(|d| d.to_lowercase()).collect();
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .filter(|record| {
+                peer.contains(&hex(&riot_core::willow::carry_advert_digest(
+                    &nonce,
+                    &record.namespace_id,
+                )))
+            })
+            .map(|record| hex(&record.namespace_id))
+            .collect())
+    })
+}
+
 /// Sets whether this community may be handed to a peer WITHOUT being asked.
 ///
 /// Never blocks a deliberate exchange — `sync_offer_for_community` still works
