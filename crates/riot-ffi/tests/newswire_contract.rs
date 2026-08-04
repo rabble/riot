@@ -1915,3 +1915,132 @@ fn a_community_this_device_has_not_joined_is_never_offered() {
         "a namespace this device never joined must not be offerable"
     );
 }
+
+// --- Per-community carry policy -------------------------------------------
+//
+// Carrying every community a device holds is what makes content saturate during
+// a shutdown. Working out which communities two devices share means disclosing
+// membership — information ABOUT a person, unlike the content they chose to
+// publish. A public wire wants maximum spread; a legal-support group does not,
+// and no cryptography changes that. So it is a per-community choice.
+// See docs/decisions/2026-08-04-membership-disclosure-note.md.
+
+#[test]
+fn a_newly_joined_community_carries_by_default_and_can_be_made_manual() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("carry.db").to_string_lossy().to_string();
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("River City Wire"))
+        .expect("create space");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    let device = open_local_profile_with_database(db_path).expect("device profile");
+    join_and_carry(
+        &device,
+        &reference,
+        "River City Wire",
+        vec![21u8; 32],
+        &[space.signed_bytes.clone()],
+    );
+
+    // Public broadcast: a newly joined community spreads unless told otherwise.
+    assert_eq!(
+        device
+            .communities_to_carry_automatically()
+            .expect("carry list"),
+        vec![reference.namespace_id.clone()]
+    );
+
+    device
+        .set_community_carry_policy(reference.namespace_id.clone(), false)
+        .expect("mark manual");
+    assert!(
+        device
+            .communities_to_carry_automatically()
+            .expect("carry list")
+            .is_empty(),
+        "a community marked manual is not offered without being asked"
+    );
+
+    // Marking it manual must NOT break a deliberate exchange — the person can
+    // still choose to hand it over.
+    assert!(
+        device
+            .sync_offer_for_community(reference.namespace_id.clone())
+            .expect("a manual community can still be offered deliberately")
+            .len()
+            > 0
+    );
+
+    device
+        .set_community_carry_policy(reference.namespace_id.clone(), true)
+        .expect("back to automatic");
+    assert_eq!(
+        device
+            .communities_to_carry_automatically()
+            .expect("carry list"),
+        vec![reference.namespace_id]
+    );
+}
+
+/// The policy survives a relaunch — it is a durable safety choice, not a
+/// session preference. A person who marks their legal-support group manual
+/// before an action must not have it silently revert when they reopen the app.
+#[test]
+fn the_carry_policy_survives_a_relaunch() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("carry-relaunch.db")
+        .to_string_lossy()
+        .to_string();
+    let key = vec![23u8; 32];
+
+    let author = open_local_profile().expect("author profile");
+    let space = author
+        .create_newswire_space(space_input("Legal Support"))
+        .expect("create space");
+    let reference = author
+        .newswire_share_reference(space.entry_id.clone())
+        .expect("share reference");
+
+    {
+        let device = open_local_profile_with_database(db_path.clone()).expect("device profile");
+        join_and_carry(
+            &device,
+            &reference,
+            "Legal Support",
+            key.clone(),
+            &[space.signed_bytes.clone()],
+        );
+        device
+            .set_community_carry_policy(reference.namespace_id.clone(), false)
+            .expect("mark manual");
+        drop(device);
+    }
+
+    let device =
+        riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(db_path, None)
+            .expect("reopen");
+    assert!(
+        device
+            .communities_to_carry_automatically()
+            .expect("carry list")
+            .is_empty(),
+        "a manual community must stay manual across a relaunch"
+    );
+    assert!(
+        !device
+            .list_communities()
+            .expect("communities")
+            .into_iter()
+            .find(|row| row.namespace_id == reference.namespace_id)
+            .expect("listed")
+            .carry_automatically,
+        "the row a person sees reflects the stored choice"
+    );
+}

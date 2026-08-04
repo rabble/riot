@@ -74,6 +74,9 @@ pub struct CommunityRow {
     pub recent_activity_unix_seconds: Option<u64>,
     /// Most recent exchange time; drives the chooser's "sync freshness".
     pub sync_freshness_unix_seconds: Option<u64>,
+    /// May this community be handed to a peer without the person asking?
+    /// Governs automatic carry only; a deliberate exchange always works.
+    pub carry_automatically: bool,
     pub archived: bool,
     /// A corrupt/incompatible at-rest author was preserved for recovery; the
     /// community is shown but cannot be opened until repaired.
@@ -546,6 +549,31 @@ impl MobileProfile {
     /// is scoped to exactly one namespace and fails closed unless it equals that
     /// namespace's live set, so carrying more communities never widens what any
     /// single peer is offered.
+    /// Whether this community may be handed to a peer WITHOUT being asked.
+    ///
+    /// Carrying every community a device holds is what makes content saturate,
+    /// but deciding which communities two devices share means disclosing
+    /// membership — information about a person, unlike the content they chose
+    /// to publish. A public wire wants spread; a legal-support group does not.
+    ///
+    /// Marking a community manual never blocks a deliberate exchange.
+    pub fn set_community_carry_policy(
+        &self,
+        namespace_id: String,
+        carry_automatically: bool,
+    ) -> Result<(), MobileError> {
+        crate::mobile_state::set_community_carry_policy(
+            &self.inner,
+            namespace_id,
+            carry_automatically,
+        )
+    }
+
+    /// The communities that may be handed to a peer without the person asking.
+    pub fn communities_to_carry_automatically(&self) -> Result<Vec<String>, MobileError> {
+        crate::mobile_state::communities_to_carry_automatically(&self.inner)
+    }
+
     pub fn sync_offer_for_community(
         &self,
         namespace_id: String,

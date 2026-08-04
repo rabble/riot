@@ -1564,6 +1564,46 @@ pub(crate) fn accept_plan(
 /// one namespace, never a wider offer in one session.
 ///
 /// Durable stores only; a memory profile has no signed form to hand on.
+/// Sets whether this community may be handed to a peer WITHOUT being asked.
+///
+/// Never blocks a deliberate exchange — `sync_offer_for_community` still works
+/// for a community marked manual. This governs only automatic carry, which is
+/// where membership disclosure happens.
+pub(crate) fn set_community_carry_policy(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+    carry_automatically: bool,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        let target = parse_entry_id(&namespace_id)?;
+        let record = profile
+            .registry
+            .find_mut(&target)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        record.carry_automatically = carry_automatically;
+        persist_registry(profile)
+    })
+}
+
+/// The communities this device may hand to a peer without the person asking —
+/// the input to an automatic exchange when two devices meet.
+///
+/// Archived and quarantined communities are excluded: neither is something a
+/// person is currently carrying on purpose.
+pub(crate) fn communities_to_carry_automatically(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .map(|record| hex(&record.namespace_id))
+            .collect())
+    })
+}
+
 pub(crate) fn sync_offer_for_community(
     inner: &Arc<Mutex<ProfileState>>,
     namespace_id: String,
@@ -2985,6 +3025,7 @@ fn community_row(profile: &LocalProfile, record: &CommunityRecord) -> CommunityR
         descriptor_entry_id: record.descriptor_entry_id.as_ref().map(|id| hex(id)),
         recent_activity_unix_seconds: record.last_activity_unix_seconds,
         sync_freshness_unix_seconds: record.last_sync_unix_seconds,
+        carry_automatically: record.carry_automatically,
         archived: record.archived,
         quarantined: record.quarantined,
         available: !record.archived && !record.quarantined && loadable,
@@ -3077,6 +3118,8 @@ pub(crate) fn register_active_community(
         quarantined: false,
         last_activity_unix_seconds: None,
         last_sync_unix_seconds: None,
+        // Public broadcast: a newly listed community carries by default.
+        carry_automatically: true,
         fetch_url: None,
         require_floor: None,
         handle_shortname: None,
@@ -3430,6 +3473,8 @@ pub(crate) fn follow_site(
             quarantined: false,
             last_activity_unix_seconds: None,
             last_sync_unix_seconds: None,
+            // Public broadcast: a newly listed community carries by default.
+            carry_automatically: true,
             fetch_url: ticket.url.clone(),
             require_floor: Some(ticket.require_raw.clone()),
             handle_shortname: None,
@@ -3464,6 +3509,8 @@ impl MobileProfile {
                 quarantined: false,
                 last_activity_unix_seconds: None,
                 last_sync_unix_seconds: None,
+                // Public broadcast: a newly listed community carries by default.
+                carry_automatically: true,
                 fetch_url: None,
                 require_floor: None,
                 handle_shortname: None,
