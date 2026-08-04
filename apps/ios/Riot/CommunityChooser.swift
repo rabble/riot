@@ -27,8 +27,8 @@ public enum CommunityRelativeTime {
     }
 
     public static func syncFreshness(_ unixSeconds: UInt64?, now: Date = Date()) -> String {
-        guard let unixSeconds else { return "Not synced yet" }
-        return "Synced \(phrase(unixSeconds, now: now))"
+        guard let unixSeconds else { return "Nothing here yet" }
+        return "Up to date \(phrase(unixSeconds, now: now))"
     }
 
     static func phrase(_ unixSeconds: UInt64, now: Date) -> String {

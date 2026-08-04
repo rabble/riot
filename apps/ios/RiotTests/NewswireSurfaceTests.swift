@@ -679,7 +679,7 @@ final class NewswireSurfaceTests: XCTestCase {
         model.load()  // projection fails ⇒ wire == .offlineStale; predicate ⇒ false
         XCTAssertFalse(model.canOfferEditorialControls)
         XCTAssertEqual(model.editorialControlsPendingNote,
-                       "Editorial controls appear after this community's first sync.")
+                       "Editorial controls appear once this community's details reach you.")
     }
 
     func testEmptyDescriptorIdIsNeverAnEditorAndShowsNoNote() throws {
@@ -1214,7 +1214,7 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 0)
         XCTAssertEqual(
             model.failure(for: key, surface: .openWire)?.message,
-            "Reaction saved. Count will update when the wire refreshes.")
+            "Saved. The count updates when new posts arrive.")
 
         model.toggleReaction(post: row, kind: .grief, surface: .openWire)
         await waitForWriterCalls(writer, count: 2)

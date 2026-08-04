@@ -590,6 +590,12 @@ public final class RiotAppModel: ObservableObject {
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
     @Published public private(set) var errorMessage: String?
 
+    /// The raw refusal behind ``errorMessage``, kept for the log and the
+    /// Diagnostics panel. It is never what the alert shows: a person who cannot
+    /// act on `StalePreview` is not helped by being shown it. Cleared together
+    /// with the message so a dismissed failure leaves nothing behind.
+    @Published public private(set) var errorTechnicalDetails: String?
+
     /// Every person this device can name, keyed by lowercase hex subspace id and
     /// already rendered by core (`"Ana · a3f91122"`).
     ///
@@ -795,6 +801,20 @@ public final class RiotAppModel: ObservableObject {
 
     public func dismissError() {
         errorMessage = nil
+        errorTechnicalDetails = nil
+    }
+
+    /// Routes a refusal to the alert as words a person can act on, and the raw
+    /// string to the log. Every path that used to do
+    /// `errorMessage = String(describing: error)` goes through here — that line
+    /// is how `Database` and `InvalidInput` reached people who had done nothing
+    /// wrong, on the launch screen, with no next step.
+    func presentFailure(_ error: Error) {
+        errorMessage = PlainFailureText.plain(for: error)
+        let details = PlainFailureText.technical(for: error)
+        errorTechnicalDetails = details
+        Logger(subsystem: "net.protest.riot", category: "failure")
+            .error("surfaced failure: \(details, privacy: .public)")
     }
 
     /// Dismisses the non-fatal self-healing notice once the person has seen it.
@@ -1026,7 +1046,7 @@ public final class RiotAppModel: ObservableObject {
                 }
             }
         } catch {
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
 
@@ -1062,7 +1082,7 @@ public final class RiotAppModel: ObservableObject {
             reactionUITestConfiguration = configuration
             finishBootstrap(repository: pair.reader)
         } catch {
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
     #endif
@@ -1914,7 +1934,7 @@ public final class RiotAppModel: ObservableObject {
         case .NotSpaceOrganizer:
             return "Only the organizer of this space can turn an app on here."
         default:
-            return String(describing: error)
+            return PlainFailureText.plain(for: error)
         }
     }
 
@@ -2196,9 +2216,10 @@ public final class RiotAppModel: ObservableObject {
         do {
             try operation()
             errorMessage = nil
+            errorTechnicalDetails = nil
         } catch {
             onFailure?()
-            errorMessage = String(describing: error)
+            presentFailure(error)
         }
     }
 

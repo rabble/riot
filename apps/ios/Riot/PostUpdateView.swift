@@ -165,7 +165,7 @@ public struct PostUpdateRequest: Equatable, Sendable {
 /// step 6) — committed, not yet exchanged.
 public struct PostedUpdate: Equatable, Sendable {
     public static let pendingExchangeStatus =
-        "Saved and signed on this device. Exchange with someone nearby to share it."
+        "Saved on this device. Meet someone nearby to pass it on."
 
     public let entryID: String
     public var exchangeStatus: String { Self.pendingExchangeStatus }

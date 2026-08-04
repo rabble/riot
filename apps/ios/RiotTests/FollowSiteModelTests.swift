@@ -54,7 +54,7 @@ final class FollowSiteModelTests: XCTestCase {
     func testStateLabelsAreHumanReadable() {
         XCTAssertEqual(FollowedSiteDisplay.label(forState: "available"), "Up to date")
         XCTAssertEqual(FollowedSiteDisplay.label(forState: "pending-first-sync"),
-                       "Waiting for first sync")
+                       "Waiting for its first posts")
         XCTAssertEqual(FollowedSiteDisplay.label(forState: "novel-token"), "novel-token")
     }
 }

@@ -591,7 +591,7 @@ public final class RiotDirectoryModel: ObservableObject {
             if let space {
                 errorMessage = "Couldn’t load tools for \(space.title)."
             } else {
-                errorMessage = String(describing: error)
+                errorMessage = PlainFailureText.plain(for: error)
             }
         }
     }
@@ -780,7 +780,18 @@ public final class RiotDirectoryModel: ObservableObject {
         if (error as? MobileError) == .AppRejected {
             return "\(name) isn’t all here yet. Sync with the group carrying it, then try again."
         }
-        return "Couldn’t get \(name): \(String(describing: error))"
+        return "Couldn’t get \(name). \(PlainFailureText.plain(for: error))"
+    }
+
+    /// Why a tool action didn’t happen, in words a person can act on. The one
+    /// refusal this model makes itself is "you moved on since you opened that" —
+    /// which used to reach a person as the literal word `staleSelection`.
+    static func actionFailureMessage(_ error: Error) -> String {
+        if (error as? RiotDirectoryActionError) == .staleSelection {
+            return "You moved to a different community while that was open. "
+                + "Nothing changed — open the tool again from here."
+        }
+        return PlainFailureText.plain(for: error)
     }
 
     public func recommend(
@@ -861,7 +872,7 @@ public final class RiotDirectoryModel: ObservableObject {
             refresh(approval: lastApproval)
         } catch {
             confirmation = nil
-            errorMessage = String(describing: error)
+            errorMessage = Self.actionFailureMessage(error)
         }
     }
 

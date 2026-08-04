@@ -71,7 +71,7 @@ public enum UsingRiotGuide {
 
     /// When these instructions were last checked against the visible UI.
     /// Update whenever a quoted label or flow changes.
-    public static let checkedDate = "2026-07-22"
+    public static let checkedDate = "2026-08-04"
 
     public static let sections: [UsingRiotGuideSection] = [
         UsingRiotGuideSection(
@@ -111,7 +111,7 @@ public enum UsingRiotGuide {
                         "Tap “Join this community”.",
                     ],
                     connectivity: .worksOffline,
-                    expectedResult: "The community is added. Its name and posts arrive on first sync — usually the first nearby exchange with someone who has them.",
+                    expectedResult: "The community is added. Its name and posts arrive once you connect — usually the first time you meet someone nearby who has them.",
                     recovery: "“That isn't a Riot community link.” means part of the link is missing — go back to where it was shared and copy all of it."
                 ),
                 UsingRiotGuideTask(
@@ -170,7 +170,7 @@ public enum UsingRiotGuide {
                     ],
                     connectivity: .worksOffline,
                     expectedResult: "The community is removed from this device. Copies other devices already carry are not affected.",
-                    recovery: "If you leave by mistake, rejoin with the community's link or from a nearby member — your old posts still exist on devices that synced them."
+                    recovery: "If you leave by mistake, rejoin with the community's link or from a nearby member — your old posts still exist on devices that received them."
                 ),
             ]
         ),
@@ -187,11 +187,11 @@ public enum UsingRiotGuide {
                     goal: "Post an update to your community",
                     steps: [
                         "Open Home and tap “Post an update”.",
-                        "Write your update. You can review exactly what will be signed before it is saved.",
-                        "Tap “Post an update” at the bottom to sign and save it.",
+                        "Write your update. You can review exactly what will be saved before it is.",
+                        "Tap “Post an update” at the bottom to save it.",
                     ],
                     connectivity: .worksOffline,
-                    expectedResult: "Saved and signed on this device. Exchange with someone nearby to share it. Posting never needs a connection — delivery happens later, when devices sync.",
+                    expectedResult: "Saved on this device. Meet someone nearby to pass it on. Posting never needs a connection — it reaches others later, when your devices meet.",
                     recovery: "If posting fails, your draft is safe — review it and try again. Drafts also survive closing the composer and the app."
                 ),
                 UsingRiotGuideTask(
@@ -199,11 +199,11 @@ public enum UsingRiotGuide {
                     goal: "Read what is happening",
                     steps: [
                         "Open Home. The front page and open wire show your community's updates; editorial history is always public.",
-                        "Open People to see who you have synced with and what they carry.",
+                        "Open People to see who you have met and what they carry.",
                     ],
                     connectivity: .worksOffline,
                     expectedResult: "Everything already on this device is readable with no connection.",
-                    recovery: "An empty wire in a community you just joined means details have not arrived yet — its name and posts arrive on first sync with a member."
+                    recovery: "An empty wire in a community you just joined means details have not arrived yet — its name and posts arrive the first time you connect with a member."
                 ),
             ]
         ),
@@ -258,7 +258,7 @@ public enum UsingRiotGuide {
                     ],
                     connectivity: .worksOffline,
                     expectedResult: "They can join with the link or QR code. Anyone with this link or QR code can follow the community — and can pass it onward; a public community's reference is itself public.",
-                    recovery: "“Nothing to share yet” means this community's details have not reached this device — the link becomes available after its first sync. Check back after exchanging with a member."
+                    recovery: "“Nothing to share yet” means this community's details have not reached this device — the link becomes available once its details arrive. Check back after exchanging with a member."
                 ),
             ]
         ),
@@ -279,7 +279,7 @@ public enum UsingRiotGuide {
                         "If you are the organizer, review what a tool can access before approving it.",
                     ],
                     connectivity: .worksOffline,
-                    expectedResult: "Approved tools work entirely on this device and save their data into the community, so it syncs like everything else.",
+                    expectedResult: "Approved tools work entirely on this device and save their data into the community, so it travels with everything else.",
                     recovery: "A tool that is unapproved, incomplete, or unavailable says so in place of opening — ask the community's organizer to review and approve it."
                 ),
             ]
@@ -305,12 +305,12 @@ public enum UsingRiotGuide {
                     id: "ts-empty-community",
                     goal: "A joined community looks empty",
                     steps: [
-                        "This is normal right after joining with a link or QR code — its name and posts arrive on first sync.",
+                        "This is normal right after joining with a link or QR code — its name and posts arrive once you connect.",
                         "Exchange with a member on the Nearby screen to bring its content over.",
                     ],
                     connectivity: .worksOffline,
                     expectedResult: "After the first exchange with a member, the community's name, front page, and wire fill in.",
-                    recovery: "If it stays empty after syncing, the peer may be in a different community — check the community name at the top on both devices."
+                    recovery: "If it stays empty after connecting, they may be in a different community — check the community name at the top on both devices."
                 ),
                 UsingRiotGuideTask(
                     id: "ts-no-device",

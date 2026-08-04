@@ -1087,7 +1087,13 @@ final class DirectoryStorefrontTests: XCTestCase {
         XCTAssertTrue(port.gotten.isEmpty)
         XCTAssertTrue(port.endorsed.isEmpty)
         XCTAssertTrue(port.shared.isEmpty)
-        XCTAssertEqual(model.errorMessage, String(describing: RiotDirectoryActionError.staleSelection))
+        // The refusal is real; the word `staleSelection` is not something a
+        // person can act on, so what they see says what to do instead.
+        XCTAssertEqual(
+            model.errorMessage,
+            RiotDirectoryModel.actionFailureMessage(RiotDirectoryActionError.staleSelection)
+        )
+        XCTAssertFalse(model.errorMessage?.contains("staleSelection") ?? true)
     }
 
     func testManagementActionsUseNamedReceiptsAndExpectedNamespace() throws {
