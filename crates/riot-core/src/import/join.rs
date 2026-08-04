@@ -19,9 +19,11 @@
 //! disposition are derived from (pre-state ∪ batch) as one set, never from
 //! sequential intermediate states.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use willow25::authorisation::AuthorisedEntry;
 use willow25::entry::EntrylikeExt;
-use willow25::groupings::Keylike;
+use willow25::groupings::{Keylike, Namespaced};
 
 use crate::willow::{encode_entry, entry_id, Entry, EntryId};
 
@@ -82,6 +84,24 @@ impl Stored {
     }
 }
 
+/// The bucket an entry can prune within: prefix pruning requires an identical
+/// namespace and subspace, so entries in different buckets can never dominate
+/// one another regardless of their paths.
+type PruneBucket = ([u8; 32], [u8; 32], Vec<Vec<u8>>);
+
+fn prune_bucket(stored: &Stored) -> PruneBucket {
+    (
+        *stored.entry.namespace_id().as_bytes(),
+        *stored.entry.subspace_id().as_bytes(),
+        stored
+            .entry
+            .path()
+            .components()
+            .map(|component| component.to_vec())
+            .collect(),
+    )
+}
+
 /// A live entry matched by a path-prefix query: canonical id, the entry,
 /// and its retained payload bytes (`Some` for typed payload consumers).
 pub type PrefixedEntry = (EntryId, Entry, Option<Vec<u8>>);
@@ -106,10 +126,15 @@ pub enum JoinEffect {
 pub struct JoinState {
     live: Vec<Stored>,
     /// Every canonical entry id ever accepted, for AlreadyPresent detection.
-    seen: Vec<EntryId>,
+    ///
+    /// A `BTreeSet`, not a `Vec`: this index only ever grows (see
+    /// `seen_index_charge_bytes`) and is membership-tested once per candidate
+    /// on every write, so a linear scan made each write cost O(seen x batch)
+    /// and got worse for the life of the store.
+    seen: BTreeSet<EntryId>,
     /// Accepted entries explicitly forgotten locally. Exact re-import may
     /// restore one; ordinary historical duplicates remain non-live.
-    forgotten: Vec<EntryId>,
+    forgotten: BTreeSet<EntryId>,
 }
 
 pub(crate) struct PersistedJoinEntry {
@@ -203,26 +228,65 @@ pub fn plan_join_with_payloads(
             if next_seen.len() >= MAX_STORE_ENTRIES {
                 return Err(JoinLimitError::SeenEntries);
             }
-            next_seen.push(item.id);
+            next_seen.insert(item.id);
         }
     }
 
     let mut union: Vec<Stored> = pre.live.clone();
+    // Membership index over `union`, so adding a candidate does not rescan the
+    // whole live set. Same reason as `seen`: this loop ran once per candidate
+    // against every live entry, so a write got slower as the store grew.
+    let mut union_ids: BTreeSet<EntryId> = union.iter().map(|stored| stored.id).collect();
     for candidate in &batch {
         if pre.forgotten.contains(&candidate.id) {
             union.retain(|stored| stored.id != candidate.id);
             union.push(candidate.clone());
-        } else if !pre.seen.contains(&candidate.id) && !union.iter().any(|s| s.id == candidate.id) {
+            union_ids.insert(candidate.id);
+        } else if !pre.seen.contains(&candidate.id) && !union_ids.contains(&candidate.id) {
             union.push(candidate.clone());
+            union_ids.insert(candidate.id);
         }
+    }
+
+    // ANCESTOR-SCOPED, NOT ALL-PAIRS — the write-path twin of the same fix in
+    // `store::evidence::replay_final_live`.
+    //
+    // This ran on EVERY write, testing every live entry against every other, so
+    // the cost of a single reaction grew with the size of the community and is
+    // the reason `MAX_STORE_ENTRIES` is 1024. Prefix pruning requires an
+    // identical namespace and subspace and a path-prefix relation, so a
+    // candidate's only possible pruners sit at one of its own path prefixes by
+    // the same author. Sibling entries of equal depth — every post in a
+    // newswire — can never prune each other, however many there are.
+    //
+    // `prunes` still decides every pair it is given; only the provably-false
+    // pairs are skipped, so the resulting live set is unchanged.
+    let mut by_path: BTreeMap<PruneBucket, Vec<usize>> = BTreeMap::new();
+    for (index, stored) in union.iter().enumerate() {
+        by_path.entry(prune_bucket(stored)).or_default().push(index);
     }
 
     let final_live: Vec<Stored> = union
         .iter()
-        .filter(|e| {
-            !union
-                .iter()
-                .any(|other| other.id != e.id && other.prunes(e))
+        .filter(|candidate| {
+            let namespace = *candidate.entry.namespace_id().as_bytes();
+            let subspace = *candidate.entry.subspace_id().as_bytes();
+            let components: Vec<Vec<u8>> = candidate
+                .entry
+                .path()
+                .components()
+                .map(|component| component.to_vec())
+                .collect();
+            let dominated = (0..=components.len()).any(|depth| {
+                let bucket = (namespace, subspace, components[..depth].to_vec());
+                by_path.get(&bucket).is_some_and(|indices| {
+                    indices.iter().any(|index| {
+                        let other = &union[*index];
+                        other.id != candidate.id && other.prunes(candidate)
+                    })
+                })
+            });
+            !dominated
         })
         .cloned()
         .collect();
@@ -230,11 +294,13 @@ pub fn plan_join_with_payloads(
         return Err(JoinLimitError::StoreEntries);
     }
     let final_ids: Vec<EntryId> = final_live.iter().map(|s| s.id).collect();
+    let final_id_set: BTreeSet<EntryId> = final_ids.iter().copied().collect();
+    let batch_ids: BTreeSet<EntryId> = batch.iter().map(|item| item.id).collect();
 
     let effects = batch
         .iter()
         .map(|item| {
-            let effect = if pre.forgotten.contains(&item.id) && final_ids.contains(&item.id) {
+            let effect = if pre.forgotten.contains(&item.id) && final_id_set.contains(&item.id) {
                 let pruned = checked_reference_ids(pre_live.iter().copied().filter(|pid| {
                     union
                         .iter()
@@ -247,7 +313,7 @@ pub fn plan_join_with_payloads(
                 }
             } else if pre.seen.contains(&item.id) {
                 JoinEffect::AlreadyPresent
-            } else if final_ids.contains(&item.id) {
+            } else if final_id_set.contains(&item.id) {
                 let pruned = checked_reference_ids(pre_live.iter().copied().filter(|pid| {
                     union
                         .iter()
@@ -281,7 +347,7 @@ pub fn plan_join_with_payloads(
                 .forgotten
                 .iter()
                 .copied()
-                .filter(|id| !final_ids.contains(id) || !batch.iter().any(|item| item.id == *id))
+                .filter(|id| !final_id_set.contains(id) || !batch_ids.contains(id))
                 .collect(),
         },
         effects,
@@ -318,9 +384,9 @@ impl JoinState {
             let entry = crate::willow::decode_entry_canonic(&record.entry_bytes)
                 .map_err(|_| crate::session::SessionError::Internal)?;
             let id = entry_id(&record.entry_bytes);
-            state.seen.push(id);
+            state.seen.insert(id);
             if record.forgotten {
-                state.forgotten.push(id);
+                state.forgotten.insert(id);
             }
             if record.live {
                 state.live.push(Stored {
@@ -351,14 +417,12 @@ impl JoinState {
         if self.live.len() == before {
             return false;
         }
-        if !self.forgotten.contains(id) {
-            self.forgotten.push(*id);
-        }
+        self.forgotten.insert(*id);
         true
     }
 
-    pub(crate) fn forgotten_ids(&self) -> &[EntryId] {
-        &self.forgotten
+    pub(crate) fn forgotten_ids(&self) -> Vec<EntryId> {
+        self.forgotten.iter().copied().collect()
     }
 
     /// Permanent per-seen-entry index charge: `seen` and `first_receipt`

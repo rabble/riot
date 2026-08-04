@@ -14,7 +14,8 @@ use riot_ffi::{
     open_local_profile, open_local_profile_with_database,
     open_profile_from_sealed_identity_with_database, AlertCertainty, AlertDraftInput,
     AlertSeverity, AlertUrgency, CommunityRelationship, MobileError, MobileProfile,
-    MobileSyncSession, NewswireSpaceInput, PublicIdentity, PublicSpace, SyncOutcomeKind,
+    MobileSyncSession, NewswireSpaceInput, PublicIdentity, PublicSpace, RelayRecord,
+    SyncOutcomeKind,
 };
 
 fn expires_later() -> u64 {
@@ -184,6 +185,66 @@ fn distinct_databases_are_independent() {
     assert_ne!(
         identity_a.namespace_id, identity_b.namespace_id,
         "distinct profiles must have distinct namespaces"
+    );
+}
+
+/// A relay added at runtime is durable profile state: it survives a reopen and
+/// remains the target selected for the next pull.
+#[test]
+fn a_runtime_relay_survives_reopen_and_is_selected_for_the_next_pull() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("relay-registry.db")
+        .to_string_lossy()
+        .to_string();
+    let runtime_relay = RelayRecord {
+        node_id: "11".repeat(32),
+        ticket_bytes: vec![0xa1, 0xb2, 0xc3],
+        last_answered_unix_seconds: None,
+    };
+
+    let (sealed, expected_identity) = {
+        let profile = open_local_profile_with_database(db_path.clone()).expect("open profile");
+        profile
+            .add_relay(runtime_relay.clone())
+            .expect("add runtime relay");
+        assert_eq!(
+            profile.relay_for_next_pull().expect("select next relay"),
+            Some(runtime_relay.clone()),
+            "the runtime relay is selected for the next pull immediately",
+        );
+        let identity = profile.identity().expect("identity");
+        let sealed = profile
+            .seal_identity(TEST_WRAPPING_KEY.to_vec())
+            .expect("seal identity");
+        (sealed, identity)
+    };
+
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        TEST_WRAPPING_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen profile");
+
+    assert_eq!(
+        reopened.identity().expect("reopened identity"),
+        expected_identity,
+        "the relay registry belongs to the same durable profile",
+    );
+    assert_eq!(
+        reopened.list_relays().expect("list relays"),
+        vec![runtime_relay.clone()],
+        "the runtime relay survives the durable profile reopen",
+    );
+    assert_eq!(
+        reopened
+            .relay_for_next_pull()
+            .expect("select next relay after reopen"),
+        Some(runtime_relay),
+        "the next pull uses the remembered runtime relay",
     );
 }
 

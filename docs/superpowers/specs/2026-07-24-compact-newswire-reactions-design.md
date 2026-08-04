@@ -218,6 +218,17 @@ in the same work unit and compiled in acceptance.
 Every ordinary post with reaction authority shows these four controls in this
 fixed order:
 
+> **SUPERSEDED (2026-08-03).** The glyph table below was overtaken by #126
+> ("draw newswire reactions as emoji instead of words") and #161, which made
+> `ReactionKind.glyph` on the enum the single canonical source and switched the
+> four to 🤝 ✊ ❗️ 🕯️. The legend copy and the unit tests were not updated at the
+> time, so a build shipped whose legend taught four glyphs the controls did not
+> draw. `ReactionLegendCopy.text` is now DERIVED from `ReactionKind.glyph`, and
+> the tests assert that relationship rather than any particular four characters.
+> The rest of this section — text presentation over emoji styling, 15pt
+> semibold, 44x44 hit targets, tabular counts — was not revisited by those PRs
+> and still needs a decision if emoji are kept.
+
 | Meaning | Visible glyph | Spoken/hover label |
 | --- | --- | --- |
 | Support | `♥` (U+2665) | Support |

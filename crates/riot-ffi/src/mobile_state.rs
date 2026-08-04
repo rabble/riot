@@ -36,9 +36,10 @@ use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
     CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
     MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
-    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
-    SyncOutcomeKind, SyncedCommunityCandidate,
+    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, RelayRecord, SignedAlert,
+    SyncOutcome, SyncOutcomeKind, SyncedCommunityCandidate,
 };
+use crate::relay_registry::{RelayRegistry, RELAY_REGISTRY_KEY, RELAY_REGISTRY_QUARANTINE_KEY};
 
 pub(crate) enum ProfileState {
     Active(Box<LocalProfile>),
@@ -152,6 +153,9 @@ pub(crate) struct LocalProfile {
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
     db: Option<riot_core::store::RiotDatabase>,
+    /// The relay records this profile has explicitly remembered. Newest first;
+    /// the first record is the target for the next registered pull.
+    pub(crate) relay_registry: RelayRegistry,
     /// The held communities and which one is active (Unit 3). Source of truth in
     /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
     // pub(crate) so the site-follow importer can read the Following gate and stamp
@@ -550,6 +554,7 @@ fn profile_with_author_and_db(
     starter_catalog_generation: Option<u8>,
 ) -> Arc<MobileProfile> {
     let (registry, registry_quarantined) = load_registry(db.as_ref());
+    let relay_registry = load_relay_registry(db.as_ref());
     Arc::new(MobileProfile {
         inner: Arc::new(Mutex::new(ProfileState::Active(Box::new(LocalProfile {
             store,
@@ -572,6 +577,7 @@ fn profile_with_author_and_db(
             starter_catalog_generation,
             prepared: None,
             db,
+            relay_registry,
             registry,
             community_authors: std::collections::HashMap::new(),
             community_generation: 0,
@@ -580,6 +586,27 @@ fn profile_with_author_and_db(
             registry_quarantined,
         })))),
     })
+}
+
+/// Loads relay records from durable local state. A malformed registry is
+/// quarantined before the profile continues with an empty list, matching the
+/// community registry's fail-safe persistence behavior.
+fn load_relay_registry(db: Option<&riot_core::store::RiotDatabase>) -> RelayRegistry {
+    let Some(db) = db else {
+        return RelayRegistry::default();
+    };
+    let Ok(Some(bytes)) = db.local_state(RELAY_REGISTRY_KEY) else {
+        return RelayRegistry::default();
+    };
+    match RelayRegistry::decode(&bytes) {
+        Ok(registry) => registry,
+        Err(_) => {
+            if matches!(db.local_state(RELAY_REGISTRY_QUARANTINE_KEY), Ok(None)) {
+                let _ = db.set_local_state(RELAY_REGISTRY_QUARANTINE_KEY, &bytes);
+            }
+            RelayRegistry::default()
+        }
+    }
 }
 
 /// Loads the persisted community registry from `local_state`. A blob that fails
@@ -826,8 +853,14 @@ fn join_community_impl(
             is_public: true,
         };
 
-        // Re-selecting the already-active community is idempotent.
+        // Re-selecting the already-active community is idempotent — but this is
+        // ALSO the path a relaunch takes: iOS restores its persisted space by
+        // re-joining it, and the registry it reopened already lists that
+        // community as active. Recover the session-scoped half (author, active
+        // space, projection, sync inventory) before returning, or the app comes
+        // back readable and unable to write into its own community.
         if profile.registry.active == Some(namespace_id) {
+            recover_active_community_session(profile, &namespace_id, key.as_deref())?;
             return Ok(joined);
         }
 
@@ -879,11 +912,42 @@ fn join_community_impl(
         bump_app_execution_generation(profile);
         profile.community_generation = profile.community_generation.wrapping_add(1);
         register_active_community(profile, descriptor_entry_id)?;
+        // Seal the INCOMING author into its own row too, not just the outgoing
+        // one. Sealing only on the way out means the author of the community you
+        // are actually IN exists solely in RAM: quit the app and the identity you
+        // post with is gone, the next launch mints an unrelated one, and every
+        // write into that community fails `require_*_authority` while reads keep
+        // working — which the UI reports as "Reactions aren't available for this
+        // post." Keyless profiles keep the old behavior (nothing to seal with).
+        seal_active_author(profile, namespace_id, key.as_deref())?;
         reproject_active(profile)?;
         Ok(joined)
     });
     wrapping_key.zeroize();
     result
+}
+
+/// Seals the CURRENTLY ACTIVE author into its own registry row and persists it,
+/// so the identity survives a relaunch. Unlike `seal_or_park_outgoing` the
+/// author is not being handed away, so it stays live in `profile.author`; only
+/// a copy of its sealed bytes is stored. A seal failure (entropy) is left to the
+/// caller's existing behavior — the session continues with a usable author.
+fn seal_active_author(
+    profile: &mut LocalProfile,
+    namespace_id: [u8; 32],
+    key: Option<&[u8; 32]>,
+) -> Result<(), MobileError> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+    let Ok(sealed) = profile.author.seal_identity(key) else {
+        return Ok(());
+    };
+    let Some(record) = profile.registry.find_mut(&namespace_id) else {
+        return Ok(());
+    };
+    record.sealed_author = Some(sealed);
+    persist_registry(profile)
 }
 
 /// The title the seeded demo space is listed under. A bundle carries signed
@@ -1387,6 +1451,46 @@ pub(crate) fn create_plan(
     })
 }
 
+/// Records that content for these namespaces just ARRIVED FROM SOMEONE ELSE.
+///
+/// `CommunityRow.sync_freshness_unix_seconds` is what the sidebar turns into
+/// "Synced 5 minutes ago" — or, when it is `None`, "Not synced yet". It was
+/// written in exactly one place in this crate, the followed-SITE path in
+/// `site_ffi.rs`; no community path ever wrote it. So every community on every
+/// device read "Not synced yet" permanently, however many syncs had landed,
+/// while Home's header rendered a separate session-only value and cheerfully
+/// said "Synced just now" about the same community in the same window.
+///
+/// Deliberately only reachable from paths carrying entries that came from
+/// somewhere else — `accept_plan` (sync sessions, carried bundles, files) and
+/// the anchor pull. Local authoring commits through `import_signed_newswire`
+/// and must never stamp this: writing your own post is not hearing from anyone.
+fn stamp_sync_freshness(profile: &mut LocalProfile, entries: &[SignedWillowEntry]) {
+    use willow25::groupings::Namespaced;
+    let Ok(now) = riot_core::willow::system_snapshot() else {
+        return;
+    };
+    let mut stamped: Vec<[u8; 32]> = Vec::new();
+    for signed in entries {
+        let Ok(entry) = riot_core::willow::decode_entry_canonic(&signed.entry_bytes) else {
+            continue;
+        };
+        let namespace = *entry.namespace_id().as_bytes();
+        if stamped.contains(&namespace) {
+            continue;
+        }
+        if let Some(record) = profile.registry.find_mut(&namespace) {
+            record.last_sync_unix_seconds = Some(now.unix_seconds);
+            stamped.push(namespace);
+        }
+    }
+    if !stamped.is_empty() {
+        // Best effort: a freshness stamp must never fail an import that has
+        // already committed. The in-memory registry is updated either way.
+        let _ = persist_registry(profile);
+    }
+}
+
 pub(crate) fn accept_plan(
     inner: &Arc<Mutex<ProfileState>>,
     plan_id: u64,
@@ -1430,6 +1534,7 @@ pub(crate) fn accept_plan(
                 install_sync_inventory(profile, next_inventory)?;
                 advance_app_write_floor(profile, &sync_entries)?;
                 refresh_app_trust_markers(profile)?;
+                stamp_sync_freshness(profile, &sync_entries);
                 Ok(ImportAcceptance {
                     accepted_entry_ids: sync_entries
                         .into_iter()
@@ -1438,6 +1543,157 @@ pub(crate) fn accept_plan(
                 })
             }
         }
+    })
+}
+
+/// The entries this device can hand onward for `namespace_id`, whether or not
+/// that community is the one on screen.
+///
+/// `open_sync_session` scopes itself to `profile.space`, and nothing iterates
+/// the joined communities, so a device carrying three communities offered only
+/// whichever was selected when it met someone. During a shutdown that is most
+/// of the propagation not happening: every device is supposed to be a carrier
+/// for everything it holds.
+///
+/// Isolation is UNCHANGED and is why this delegates rather than reaching into
+/// `sync_inventory`: `build_followed_site_offer` derives the offer from the
+/// durable store scoped to exactly one namespace and fails closed unless it
+/// equals that namespace's live set — the same exact-equality discipline
+/// `install_sync_inventory` applies to the active community, applied per
+/// namespace. Carrying more communities means more offers, each still scoped to
+/// one namespace, never a wider offer in one session.
+///
+/// Durable stores only; a memory profile has no signed form to hand on.
+/// What this device tells a peer about the communities it carries, blinded by a
+/// per-session nonce so membership is not disclosed in the clear.
+///
+/// Returns one hex digest per automatically-carried community, SORTED — the
+/// order carries no information about when communities were joined. Both sides
+/// send one of these; each then matches the peer's digests against its own set
+/// with `communities_shared_with_peer`, so each learns the INTERSECTION and
+/// nothing about the rest.
+///
+/// The nonce must be fresh per session and identical on both sides; deriving it
+/// from both sides' contributions is preferred so neither party picks it alone.
+///
+/// ⚠️ The COUNT is not hidden. A peer learns how many communities you carry
+/// automatically, even for the ones it cannot identify. Padding to a fixed size
+/// would fix that and is not done here.
+pub(crate) fn carry_advertisement(
+    inner: &Arc<Mutex<ProfileState>>,
+    nonce: Vec<u8>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        if nonce.is_empty() {
+            // A fixed/empty nonce would make advertisements identical across
+            // encounters and trivially correlatable. Refuse rather than emit a
+            // linkable advertisement.
+            return Err(MobileError::InvalidInput);
+        }
+        let mut digests: Vec<String> = profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .map(|record| {
+                hex(&riot_core::willow::carry_advert_digest(
+                    &nonce,
+                    &record.namespace_id,
+                ))
+            })
+            .collect();
+        digests.sort();
+        Ok(digests)
+    })
+}
+
+/// The communities this device and the peer BOTH carry, from the peer's
+/// advertisement — the intersection, and nothing else.
+///
+/// A community the peer holds and this device does not is never learned: its
+/// digest simply matches nothing here.
+pub(crate) fn communities_shared_with_peer(
+    inner: &Arc<Mutex<ProfileState>>,
+    nonce: Vec<u8>,
+    peer_digests: Vec<String>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        if nonce.is_empty() {
+            return Err(MobileError::InvalidInput);
+        }
+        let peer: std::collections::BTreeSet<String> =
+            peer_digests.into_iter().map(|d| d.to_lowercase()).collect();
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .filter(|record| {
+                peer.contains(&hex(&riot_core::willow::carry_advert_digest(
+                    &nonce,
+                    &record.namespace_id,
+                )))
+            })
+            .map(|record| hex(&record.namespace_id))
+            .collect())
+    })
+}
+
+/// Sets whether this community may be handed to a peer WITHOUT being asked.
+///
+/// Never blocks a deliberate exchange — `sync_offer_for_community` still works
+/// for a community marked manual. This governs only automatic carry, which is
+/// where membership disclosure happens.
+pub(crate) fn set_community_carry_policy(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+    carry_automatically: bool,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        let target = parse_entry_id(&namespace_id)?;
+        let record = profile
+            .registry
+            .find_mut(&target)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        record.carry_automatically = carry_automatically;
+        persist_registry(profile)
+    })
+}
+
+/// The communities this device may hand to a peer without the person asking —
+/// the input to an automatic exchange when two devices meet.
+///
+/// Archived and quarantined communities are excluded: neither is something a
+/// person is currently carrying on purpose.
+pub(crate) fn communities_to_carry_automatically(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<String>, MobileError> {
+    with_active(inner, |profile| {
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.carry_automatically && !record.archived && !record.quarantined)
+            .map(|record| hex(&record.namespace_id))
+            .collect())
+    })
+}
+
+pub(crate) fn sync_offer_for_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+) -> Result<Vec<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        let target = parse_entry_id(&namespace_id)?;
+        // Held-community check: never build an offer for a namespace this device
+        // has not joined, even if its store happens to hold entries for it.
+        if profile.registry.find(&target).is_none() {
+            return Err(MobileError::CommunityUnavailable);
+        }
+        let offer = build_followed_site_offer(profile, &target)?;
+        encode_bundle(&offer)
+            .map(|bytes| vec![bytes])
+            .map_err(|_| MobileError::SessionLimit)
     })
 }
 
@@ -2115,6 +2371,9 @@ pub(crate) fn import_anchor_pulled_namespace(
                 }
                 imported += eligible;
             }
+        }
+        if imported > 0 {
+            stamp_sync_freshness(profile, entries);
         }
         Ok(imported)
     })
@@ -2894,6 +3153,7 @@ fn community_row(profile: &LocalProfile, record: &CommunityRecord) -> CommunityR
         descriptor_entry_id: record.descriptor_entry_id.as_ref().map(|id| hex(id)),
         recent_activity_unix_seconds: record.last_activity_unix_seconds,
         sync_freshness_unix_seconds: record.last_sync_unix_seconds,
+        carry_automatically: record.carry_automatically,
         archived: record.archived,
         quarantined: record.quarantined,
         available: !record.archived && !record.quarantined && loadable,
@@ -2908,6 +3168,54 @@ pub(crate) fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError
             .map_err(map_database_error)?;
     }
     Ok(())
+}
+
+fn persist_relay_registry(profile: &LocalProfile) -> Result<(), MobileError> {
+    if let Some(db) = profile.db.as_ref() {
+        db.set_local_state(RELAY_REGISTRY_KEY, &profile.relay_registry.encode())
+            .map_err(map_database_error)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn add_relay(
+    inner: &Arc<Mutex<ProfileState>>,
+    relay: RelayRecord,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        parse_entry_id(&relay.node_id)?;
+        if relay.ticket_bytes.is_empty() {
+            return Err(MobileError::InvalidInput);
+        }
+        profile.relay_registry.upsert(relay);
+        persist_relay_registry(profile)
+    })
+}
+
+pub(crate) fn list_relays(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<RelayRecord>, MobileError> {
+    with_active(inner, |profile| Ok(profile.relay_registry.relays.clone()))
+}
+
+pub(crate) fn relay_for_next_pull(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Option<RelayRecord>, MobileError> {
+    with_active(inner, |profile| Ok(profile.relay_registry.next()))
+}
+
+#[cfg(feature = "net")]
+pub(crate) fn mark_relay_answered(
+    inner: &Arc<Mutex<ProfileState>>,
+    node_id: &str,
+    answered_at: u64,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        if !profile.relay_registry.mark_answered(node_id, answered_at) {
+            return Err(MobileError::InvalidInput);
+        }
+        persist_relay_registry(profile)
+    })
 }
 
 /// Register (or refresh the metadata of) the ACTIVE community from the current
@@ -2938,6 +3246,8 @@ pub(crate) fn register_active_community(
         quarantined: false,
         last_activity_unix_seconds: None,
         last_sync_unix_seconds: None,
+        // Public broadcast: a newly listed community carries by default.
+        carry_automatically: true,
         fetch_url: None,
         require_floor: None,
         handle_shortname: None,
@@ -3291,6 +3601,8 @@ pub(crate) fn follow_site(
             quarantined: false,
             last_activity_unix_seconds: None,
             last_sync_unix_seconds: None,
+            // Public broadcast: a newly listed community carries by default.
+            carry_automatically: true,
             fetch_url: ticket.url.clone(),
             require_floor: Some(ticket.require_raw.clone()),
             handle_shortname: None,
@@ -3325,6 +3637,8 @@ impl MobileProfile {
                 quarantined: false,
                 last_activity_unix_seconds: None,
                 last_sync_unix_seconds: None,
+                // Public broadcast: a newly listed community carries by default.
+                carry_automatically: true,
                 fetch_url: None,
                 require_floor: None,
                 handle_shortname: None,
@@ -3349,6 +3663,100 @@ pub(crate) fn active_community(
     })
 }
 
+/// True when `profile.author` is bound to `namespace_id`. Every newswire write
+/// checks exactly this — `require_reaction_authority` and its post/comment/
+/// editorial siblings compare the author's namespace against the descriptor's —
+/// so an unbound author turns every write into `AuthorityInvalid`, which reaches
+/// Swift as `InvalidInput` and renders as "Reactions aren't available for this
+/// post." A read never checks it, which is why the app looks half-alive.
+fn author_is_bound_to(profile: &LocalProfile, namespace_id: &[u8; 32]) -> bool {
+    profile.author.namespace_id().as_bytes() == namespace_id
+}
+
+/// Rebuilds the active namespace's `sync_inventory` from the durable store.
+///
+/// The inventory is session state that no open path restores, so after a
+/// relaunch it is empty while the store still holds every entry — and
+/// `ensure_complete_sync_inventory` refuses every write on `[] != live_ids`.
+/// The signed bytes are read back VERBATIM from the store (never re-encoded),
+/// and `install_sync_inventory` re-applies the same exact-equality guard a sync
+/// offer must satisfy, so this cannot widen what a peer is offered.
+///
+/// A memory-backed store keeps no signed form, so there is nothing to rebuild
+/// and nothing to fix: those profiles populate the inventory in-session.
+fn rehydrate_sync_inventory(
+    profile: &mut LocalProfile,
+    namespace_id: &[u8; 32],
+) -> Result<(), MobileError> {
+    if profile.db.is_none() || !profile.sync_inventory.is_empty() {
+        return Ok(());
+    }
+    if namespace_live_ids(profile, namespace_id)?.is_empty() {
+        return Ok(());
+    }
+    let offer = build_followed_site_offer(profile, namespace_id)?;
+    install_sync_inventory(profile, offer)
+}
+
+/// Restores the session-scoped half of an ALREADY-active community: the author
+/// bound to it, the active `space` scoping, its projection, and its sync
+/// inventory. Called only on the re-select path, where a relaunch arrives with
+/// durable registry state and nothing else.
+///
+/// Deliberately does not bump the community generation or seal an outgoing
+/// author: the community is not changing, so no handle becomes stale and there
+/// is no outgoing identity worth keeping.
+fn recover_active_community_session(
+    profile: &mut LocalProfile,
+    target_ns: &[u8; 32],
+    key: Option<&[u8; 32]>,
+) -> Result<(), MobileError> {
+    if !author_is_bound_to(profile, target_ns) {
+        let sealed = key.and_then(|_| {
+            profile
+                .registry
+                .find(target_ns)
+                .and_then(|record| record.sealed_author.clone())
+        });
+        if let (Some(sealed), Some(key)) = (sealed, key) {
+            // A failed unseal is NOT fatal here: the community stays selected and
+            // readable, and the chooser's existing recovery (an explicit switch)
+            // still retries it. Failing the launch-time re-select would brick the
+            // app on a community it can perfectly well render.
+            if let Ok(author) = EvidenceAuthor::open_sealed_identity(key, &sealed) {
+                profile.author = author;
+                profile.community_authors.remove(target_ns);
+                if let Some(record) = profile.registry.find_mut(target_ns) {
+                    record.quarantined = false;
+                }
+            }
+        } else if let Some(author) = profile.community_authors.remove(target_ns) {
+            profile.author = author;
+        }
+    }
+
+    // Scope the session to this namespace BEFORE any inventory work: with
+    // `space == None`, `active_namespace_live_ids` falls back to the WHOLE
+    // store, which on a multi-community device would widen the inventory past
+    // this namespace.
+    if profile.space.is_none() {
+        let record = profile
+            .registry
+            .find(target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        profile.space = Some(PublicSpace {
+            namespace_id: hex(target_ns),
+            title: record.title.clone(),
+            is_public: true,
+        });
+        profile.joined_others_space = !is_space_organizer(profile);
+        reproject_active(profile)?;
+        refresh_app_trust_markers(profile)?;
+    }
+
+    rehydrate_sync_inventory(profile, target_ns)
+}
+
 pub(crate) fn switch_community(
     inner: &Arc<Mutex<ProfileState>>,
     namespace_id: String,
@@ -3360,7 +3768,18 @@ pub(crate) fn switch_community(
 
         // Re-selecting the active community is a no-op: no cancellation, no
         // generation bump, so in-flight work is not disturbed.
+        //
+        // A RELAUNCH lands here. `registry.active` is durable, but the author,
+        // the active `space`, and the sync inventory are all session-scoped and
+        // come back empty — so the app reopens its database, calls this with the
+        // community the registry already lists, gets a clean no-op, and then
+        // fails EVERY newswire write while reads keep working. Restore the
+        // session-scoped half before returning; it is a recovery, not a switch,
+        // so no generation bump and no outgoing seal (the outgoing author here
+        // IS the freshly opened one, and sealing it would overwrite the
+        // community's real sealed author).
         if profile.registry.active == Some(target_ns) {
+            recover_active_community_session(profile, &target_ns, Some(&key))?;
             let record = profile
                 .registry
                 .find(&target_ns)
@@ -3492,6 +3911,12 @@ pub(crate) fn switch_community(
             .community_sync_inventory
             .remove(&target_ns)
             .unwrap_or_default();
+        // Nothing parked means either a freshly loaded community (empty store
+        // side too, so this is a no-op) or a community whose content was
+        // imported in an EARLIER session — on a durable profile the signed
+        // bytes are still there and the inventory is rebuilt from them rather
+        // than left empty, which would refuse every write into it.
+        rehydrate_sync_inventory(profile, &target_ns)?;
         refresh_app_trust_markers(profile)?;
         persist_registry(profile)?;
 

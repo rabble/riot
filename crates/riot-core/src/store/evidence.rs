@@ -274,16 +274,53 @@ impl SqliteEvidenceStore {
     }
 
     fn persist(&self, mutation: &EvidenceMutation) -> Result<(), SessionError> {
-        let (deleted_bytes, deleted_rows) = self
-            .database
-            .read_connection(current_projection_cost)
-            .map_err(session_error)?;
         let accepted_bytes = mutation
             .accepted
             .iter()
             .map(|entry| entry.entry_bytes.len() + entry.capability_bytes.len() + 64)
             .sum::<usize>();
-        let live_bytes = mutation.live.iter().try_fold(0usize, |total, live| {
+        // Only the live rows this commit actually WRITES are charged. The
+        // transaction persists `mutation.live` as a delta against what is
+        // already on file, so charging the whole live set made the estimate
+        // grow with the size of the community until `admit_write` refused every
+        // write. `already_live` is read outside the write transaction and is
+        // advisory: the transaction recomputes the delta itself, so a racing
+        // commit can only make this estimate conservative, never unsafe.
+        let already_live = self
+            .database
+            .read_connection(live_entry_keys)
+            .map_err(session_error)?;
+        let mut desired: BTreeSet<LiveRowKey> = BTreeSet::new();
+        for live in &mutation.live {
+            let entry =
+                decode_entry_canonic(&live.entry_bytes).map_err(|_| SessionError::Internal)?;
+            desired.insert((
+                entry.namespace_id().as_bytes().to_vec(),
+                live.entry_id.to_vec(),
+            ));
+        }
+        let live_delta: Vec<_> = mutation
+            .live
+            .iter()
+            .filter(|live| {
+                let Ok(entry) = decode_entry_canonic(&live.entry_bytes) else {
+                    return true;
+                };
+                !already_live.contains(&(
+                    entry.namespace_id().as_bytes().to_vec(),
+                    live.entry_id.to_vec(),
+                ))
+            })
+            .collect();
+        let departing_keys: Vec<_> = already_live
+            .into_iter()
+            .filter(|key| !desired.contains(key))
+            .collect();
+        let (deleted_bytes, deleted_rows) = self
+            .database
+            .read_connection(|connection| departing_projection_cost(connection, &departing_keys))
+            .map_err(session_error)?;
+        let live_bytes = live_delta.iter().try_fold(0usize, |total, live| {
             let entry =
                 decode_entry_canonic(&live.entry_bytes).map_err(|_| SessionError::Internal)?;
             let prefix_bytes = entry.path().components().fold(0usize, |sum, component| {
@@ -325,7 +362,8 @@ impl SqliteEvidenceStore {
         let row_count = mutation
             .accepted
             .len()
-            .saturating_add(mutation.live.len().saturating_mul(4))
+            .saturating_add(live_delta.len().saturating_mul(4))
+            .saturating_add(departing_keys.len())
             .saturating_add(mutation.forgotten.len())
             .saturating_add(
                 mutation
@@ -460,6 +498,83 @@ impl SqliteEvidenceStore {
 }
 
 #[cfg(feature = "sqlite")]
+/// A row's identity in `live_entries` and `entry_path_prefixes`: its namespace
+/// and canonical entry id.
+#[cfg(feature = "sqlite")]
+type LiveRowKey = (Vec<u8>, Vec<u8>);
+
+/// The `(namespace_id, entry_id)` of every row currently in `live_entries`.
+/// Used to charge a write for the live rows it actually adds or removes rather
+/// than for the whole live set.
+#[cfg(feature = "sqlite")]
+fn live_entry_keys(
+    connection: &rusqlite::Connection,
+) -> Result<BTreeSet<LiveRowKey>, super::DatabaseError> {
+    let mut statement = connection
+        .prepare("SELECT namespace_id, entry_id FROM live_entries")
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(map_sqlite_error)?;
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        keys.insert(row.map_err(map_sqlite_error)?);
+    }
+    Ok(keys)
+}
+
+/// The row-and-byte cost of removing exactly `keys` from the live projection —
+/// each row plus the `entry_path_prefixes` rows that cascade with it.
+///
+/// This replaced charging a write for `current_projection_cost`, the cost of
+/// wiping the WHOLE projection. That charge was correct while every commit
+/// rewrote the entire live set, and became the second reason the WAL estimate
+/// grew with store size once the write itself became a delta.
+#[cfg(feature = "sqlite")]
+fn departing_projection_cost(
+    connection: &rusqlite::Connection,
+    keys: &[LiveRowKey],
+) -> Result<(usize, usize), super::DatabaseError> {
+    let mut bytes = 0usize;
+    let mut rows = 0usize;
+    for (namespace, entry_id) in keys {
+        let (live_rows, live_bytes): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(
+                    length(namespace_id) + length(entry_id) + length(subspace_id) +
+                    length(path_bytes) + length(timestamp_be) + length(payload_digest) +
+                    8 + COALESCE(length(payload), 0)
+                 ), 0) FROM live_entries WHERE namespace_id = ?1 AND entry_id = ?2",
+                params![namespace, entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(map_sqlite_error)?;
+        let (prefix_rows, prefix_bytes): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(
+                    length(namespace_id) + length(entry_id) + 8 + length(prefix_bytes)
+                 ), 0) FROM entry_path_prefixes WHERE namespace_id = ?1 AND entry_id = ?2",
+                params![namespace, entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(map_sqlite_error)?;
+        rows = rows
+            .saturating_add(usize::try_from(live_rows).unwrap_or(0))
+            .saturating_add(usize::try_from(prefix_rows).unwrap_or(0));
+        bytes = bytes
+            .saturating_add(usize::try_from(live_bytes).unwrap_or(0))
+            .saturating_add(usize::try_from(prefix_bytes).unwrap_or(0));
+    }
+    Ok((bytes, rows))
+}
+
+/// The whole live projection's cost. No longer charged to a write (see
+/// `departing_projection_cost`), retained as the reference implementation of
+/// the accounting.
+#[cfg(feature = "sqlite")]
+#[allow(dead_code)]
 fn current_projection_cost(
     connection: &rusqlite::Connection,
 ) -> Result<(usize, usize), super::DatabaseError> {
@@ -586,16 +701,30 @@ fn persist_transaction(
             .map_err(map_sqlite_error)?;
     }
 
-    transaction
-        .execute("DELETE FROM entry_path_prefixes", [])
-        .map_err(map_sqlite_error)?;
-    transaction
-        .execute("DELETE FROM live_entries", [])
-        .map_err(map_sqlite_error)?;
+    // THE LIVE SET IS WRITTEN AS A DELTA, NOT REWRITTEN.
+    //
+    // This used to be `DELETE FROM entry_path_prefixes` + `DELETE FROM
+    // live_entries` followed by a full reinsert of `mutation.live` — which is
+    // the WHOLE live set after the join, so every commit rewrote the entire
+    // store. The WAL cost of one reaction therefore grew with the size of the
+    // community, and `admit_write` (which is handed an estimate derived from
+    // the same `mutation.live`) started answering `BusyRetryable` once it
+    // crossed `checkpoint_hard_pages`. That surfaces as `StalePreview` ->
+    // `MobileError::Internal` -> "Reactions aren't available for this post",
+    // and it takes SYNC down with it, because a carried entry commits through
+    // this same path. A device that worked at 30 entries was permanently
+    // read-only at 44, with no message saying why.
+    //
+    // The observable result is identical — `live_entries` holds exactly
+    // `mutation.live` when this returns — but the pages touched are
+    // proportional to what actually CHANGED. Path prefixes ride the
+    // `ON DELETE CASCADE` on `entry_path_prefixes` (foreign keys are verified
+    // ON at open), so a departing row takes its prefixes with it.
+    let mut desired: BTreeSet<LiveRowKey> = BTreeSet::new();
     for live in &mutation.live {
         let entry = decode_entry_canonic(&live.entry_bytes)
             .map_err(|_| super::DatabaseError::CorruptDatabase)?;
-        let namespace = entry.namespace_id().as_bytes();
+        let namespace = entry.namespace_id().as_bytes().to_vec();
         let accepted_bytes: Vec<u8> = transaction
             .query_row(
                 "SELECT entry_bytes FROM accepted_entries
@@ -604,9 +733,43 @@ fn persist_transaction(
                 |row| row.get(0),
             )
             .map_err(map_sqlite_error)?;
+        // Unchanged integrity check: a live row must be backed byte-for-byte by
+        // its accepted evidence. Kept for EVERY live entry, not just the new
+        // ones — it is a read, so it costs no WAL pages.
         if accepted_bytes != live.entry_bytes {
             return Err(super::DatabaseError::CorruptDatabase);
         }
+        desired.insert((namespace.clone(), live.entry_id.to_vec()));
+
+        let existing: Option<Option<Vec<u8>>> = transaction
+            .query_row(
+                "SELECT payload FROM live_entries
+                 WHERE namespace_id = ?1 AND entry_id = ?2",
+                params![namespace, live.entry_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map_sqlite_error)?;
+        match existing {
+            // Already live and identical. The entry id is content-addressed
+            // over everything but the payload, so nothing else can differ.
+            Some(payload) if payload == live.payload => continue,
+            // Already live, but the payload arrived (or changed) since. Update
+            // in place; the path columns are fixed by the entry id, so the
+            // prefixes on file are still correct.
+            Some(_) => {
+                transaction
+                    .execute(
+                        "UPDATE live_entries SET payload = ?3
+                         WHERE namespace_id = ?1 AND entry_id = ?2",
+                        params![namespace, live.entry_id, live.payload],
+                    )
+                    .map_err(map_sqlite_error)?;
+                continue;
+            }
+            None => {}
+        }
+
         transaction
             .execute(
                 "INSERT INTO live_entries(
@@ -627,6 +790,35 @@ fn persist_transaction(
             )
             .map_err(map_sqlite_error)?;
         insert_prefixes(transaction, &entry, &live.entry_id)?;
+    }
+
+    // Everything the join dropped from the live set. Collected first, then
+    // deleted, so the read is not invalidated mid-iteration.
+    let departed: Vec<LiveRowKey> = {
+        let mut statement = transaction
+            .prepare("SELECT namespace_id, entry_id FROM live_entries")
+            .map_err(map_sqlite_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(map_sqlite_error)?;
+        let mut departed = Vec::new();
+        for row in rows {
+            let key = row.map_err(map_sqlite_error)?;
+            if !desired.contains(&key) {
+                departed.push(key);
+            }
+        }
+        departed
+    };
+    for (namespace, entry_id) in departed {
+        transaction
+            .execute(
+                "DELETE FROM live_entries WHERE namespace_id = ?1 AND entry_id = ?2",
+                params![namespace, entry_id],
+            )
+            .map_err(map_sqlite_error)?;
     }
 
     sync_forget_ledger(transaction, mutation)?;
@@ -1300,6 +1492,41 @@ fn replay_final_live(
     accepted: &BTreeMap<AcceptedKey, AcceptedInfo>,
 ) -> Result<BTreeSet<AcceptedKey>, super::DatabaseError> {
     let union = pre_live.union(batch).copied().collect::<BTreeSet<_>>();
+
+    // ANCESTOR-SCOPED, NOT ALL-PAIRS.
+    //
+    // This was `union.iter()` nested inside `union.iter()` — every entry tested
+    // against every other entry — called once per import receipt, so profile
+    // open was quadratic in store size and linear in receipts on top. Measured
+    // at 1000 entries it was 635 ms of an 809 ms open (78%), against 47 ms for
+    // all the signature verification put together.
+    //
+    // Almost every one of those comparisons was decidably false before it ran.
+    // Prefix pruning (willow25 `entry/entrylike.rs:314-319`) says `e1` prunes
+    // `e2` ONLY when the namespace ids match, the subspace ids match, `e1`'s
+    // path is a prefix of `e2`'s, and `e1` is newer. So a candidate's only
+    // possible pruners are entries at one of its own path PREFIXES, by the same
+    // author, in the same namespace — at most `component_count() + 1` paths,
+    // and Riot's newswire paths are ~6 components deep. Two posts, which sit at
+    // sibling paths of equal depth, can never prune one another however many of
+    // them there are.
+    //
+    // The `prunes` predicate itself is unchanged and still decides every
+    // surviving pair. All that changed is which pairs are offered to it: the
+    // ones skipped are exactly those where a prefix relation is impossible, so
+    // the resulting live set is identical.
+    let mut by_path: std::collections::HashMap<PruneBucket, Vec<AcceptedKey>> =
+        std::collections::HashMap::new();
+    for key in &union {
+        let Some(info) = accepted.get(key) else {
+            return Err(super::DatabaseError::CorruptDatabase);
+        };
+        by_path
+            .entry(prune_bucket(&info.entry))
+            .or_default()
+            .push(*key);
+    }
+
     union
         .iter()
         .filter_map(|candidate_key| {
@@ -1307,15 +1534,50 @@ fn replay_final_live(
                 Some(info) => &info.entry,
                 None => return Some(Err(super::DatabaseError::CorruptDatabase)),
             };
-            let dominated = union.iter().any(|other_key| {
-                other_key != candidate_key
-                    && accepted
-                        .get(other_key)
-                        .is_some_and(|other| other.entry.prunes(candidate))
+            let namespace = *candidate.namespace_id().as_bytes();
+            let subspace = *candidate.subspace_id().as_bytes();
+            let components: Vec<Vec<u8>> = candidate
+                .path()
+                .components()
+                .map(|component| component.to_vec())
+                .collect();
+
+            // Every prefix of the candidate's path, shortest first, including
+            // the full path (an equal path is a prefix of itself, and a newer
+            // entry at the same path prunes an older one).
+            let dominated = (0..=components.len()).any(|depth| {
+                let bucket = (namespace, subspace, components[..depth].to_vec());
+                by_path.get(&bucket).is_some_and(|keys| {
+                    keys.iter().any(|other_key| {
+                        other_key != candidate_key
+                            && accepted
+                                .get(other_key)
+                                .is_some_and(|other| other.entry.prunes(candidate))
+                    })
+                })
             });
             (!dominated).then_some(Ok(*candidate_key))
         })
         .collect()
+}
+
+/// The bucket an entry can prune within: prefix pruning requires an identical
+/// namespace and subspace, so entries in different buckets can never dominate
+/// one another regardless of their paths.
+#[cfg(feature = "sqlite")]
+type PruneBucket = ([u8; 32], [u8; 32], Vec<Vec<u8>>);
+
+#[cfg(feature = "sqlite")]
+fn prune_bucket(entry: &crate::willow::Entry) -> PruneBucket {
+    (
+        *entry.namespace_id().as_bytes(),
+        *entry.subspace_id().as_bytes(),
+        entry
+            .path()
+            .components()
+            .map(|component| component.to_vec())
+            .collect(),
+    )
 }
 
 #[cfg(feature = "sqlite")]

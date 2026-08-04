@@ -25,6 +25,36 @@ pub fn entry_id(entry_bytes: &[u8]) -> EntryId {
     hasher.finalize().into()
 }
 
+/// A community's identity as advertised to a peer during a nearby exchange,
+/// blinded by a per-session nonce.
+///
+/// `SHA256("riot/carry-advert/v1" || u32be(nonce_len) || nonce || namespace_id)`
+///
+/// Two devices that meet need to work out which communities they share, and a
+/// `namespace_id` is a stable public identifier — advertising it in the clear
+/// discloses MEMBERSHIP, which is information about a person rather than the
+/// content they chose to publish. Blinding by a fresh per-session nonce means an
+/// eavesdropper learns nothing usable and cannot correlate two encounters by the
+/// same person.
+///
+/// What this does NOT do, by construction: a peer who already knows a
+/// `namespace_id` can compute its digest for the session nonce and test for it.
+/// That is inherent — any scheme where two strangers can determine "do we both
+/// hold X" lets someone who knows X ask. Defending against a peer with a large
+/// dictionary of known communities needs a DH-based private set intersection;
+/// see docs/decisions/2026-08-04-membership-disclosure-note.md.
+///
+/// Both sides MUST use the same nonce, and it must be fresh per session. Deriving
+/// it from BOTH sides' contributions is preferred so neither picks it alone.
+pub fn carry_advert_digest(nonce: &[u8], namespace_id: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"riot/carry-advert/v1");
+    hasher.update((nonce.len() as u32).to_be_bytes());
+    hasher.update(nonce);
+    hasher.update(namespace_id);
+    hasher.finalize().into()
+}
+
 /// Proof identity binding the entry to its capability and signature.
 pub fn evidence_digest(
     entry_bytes: &[u8],

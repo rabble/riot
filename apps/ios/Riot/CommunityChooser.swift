@@ -49,6 +49,49 @@ public enum CommunityRelativeTime {
     }
 }
 
+/// What the community list says about a community, written from the reader's
+/// side rather than the transport's.
+///
+/// "Not synced yet" / "Synced 5 minutes ago" described a protocol state. Nobody
+/// opens Riot wondering whether a sync ran; they open it wondering whether
+/// their people have said anything. So the line leads with what is NEW FOR YOU
+/// and falls back to reassurance only when there is nothing new.
+///
+/// A pure function of the counted unread, the freshness stamp and a supplied
+/// `now`, so it is deterministic under test.
+public enum CommunityWhatsNew {
+    /// `unread` is nil when the caller could not count (the community's
+    /// descriptor has not arrived, or nothing has been projected yet) — the line
+    /// then falls back to freshness rather than claiming "nothing new", which
+    /// would be a promise the caller cannot keep.
+    public static func line(
+        unread: Int?,
+        syncFreshnessUnixSeconds: UInt64?,
+        pendingFirstSync: Bool,
+        now: Date = Date()
+    ) -> String {
+        if pendingFirstSync {
+            // Honest and ACTIONABLE: nothing has arrived, and what unblocks it
+            // is meeting someone who has it — not waiting for a spinner.
+            return "Waiting to hear from anyone"
+        }
+        if let unread, unread > 0 {
+            return "\(unread) new report\(unread == 1 ? "" : "s")"
+        }
+        guard let syncFreshnessUnixSeconds else {
+            return "Waiting to hear from anyone"
+        }
+        let phrase = CommunityRelativeTime.phrase(syncFreshnessUnixSeconds, now: now)
+        if unread == nil {
+            // Freshness only — say when, without claiming to know about unread.
+            return "Up to date \(phrase)"
+        }
+        return phrase == "just now"
+            ? "Nothing new · up to date"
+            : "Nothing new · up to date \(phrase)"
+    }
+}
+
 /// One row in the "Your communities" chooser, in plain language only. The
 /// namespace id is carried for addressing (switch, recovery) but is NEVER the
 /// leading display — name and relationship are (nav design: "no technical ids
@@ -60,6 +103,9 @@ public struct CommunityChooserRow: Equatable, Identifiable, Sendable {
     public let relationshipLabel: String
     public let recentActivity: String
     public let syncFreshness: String
+    /// The reader-facing line: what is new for you, or reassurance that nothing
+    /// is. Prefer this over `syncFreshness` for display.
+    public let whatsNew: String
     /// Can be opened right now — the switch target. False → recovery, never dropped.
     public let available: Bool
     public let archived: Bool
@@ -83,6 +129,7 @@ public struct CommunityChooserRow: Equatable, Identifiable, Sendable {
         relationshipLabel: String,
         recentActivity: String,
         syncFreshness: String,
+        whatsNew: String = "",
         available: Bool,
         archived: Bool,
         quarantined: Bool,
@@ -93,19 +140,29 @@ public struct CommunityChooserRow: Equatable, Identifiable, Sendable {
         self.relationshipLabel = relationshipLabel
         self.recentActivity = recentActivity
         self.syncFreshness = syncFreshness
+        self.whatsNew = whatsNew
         self.available = available
         self.archived = archived
         self.quarantined = quarantined
         self.pendingFirstSync = pendingFirstSync
     }
 
-    public static func from(_ row: CommunityRow, now: Date = Date()) -> CommunityChooserRow {
+    public static func from(
+        _ row: CommunityRow,
+        unread: Int? = nil,
+        now: Date = Date()
+    ) -> CommunityChooserRow {
         CommunityChooserRow(
             namespaceID: row.namespaceId,
             name: row.title,
             relationshipLabel: row.relationship.plainLabel,
             recentActivity: CommunityRelativeTime.recentActivity(row.recentActivityUnixSeconds, now: now),
             syncFreshness: CommunityRelativeTime.syncFreshness(row.syncFreshnessUnixSeconds, now: now),
+            whatsNew: CommunityWhatsNew.line(
+                unread: unread,
+                syncFreshnessUnixSeconds: row.syncFreshnessUnixSeconds,
+                pendingFirstSync: Self.isPendingFirstSync(row),
+                now: now),
             available: row.available,
             archived: row.archived,
             quarantined: row.quarantined,
@@ -424,7 +481,7 @@ struct CommunityChooserRowView: View {
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
-            Text(row.syncFreshness)
+            Text(row.whatsNew)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !row.available {

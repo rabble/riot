@@ -442,6 +442,11 @@ public final class RiotProfileRepository {
             profile = try openFresh(databasePath: databasePath)
         }
 
+        // The shipped relay is first-run seed data, not the pull mechanism.
+        // Once a person has added a relay, reopening must leave that registry
+        // untouched so the next pull uses the person's choice.
+        try seedDefaultRelayIfNeeded(profile: profile)
+
         if persisted.space != nil {
             // STEP 2 — restore the space. A space the core will not rebuild (a
             // schema change, a namespace it now refuses) must not brick the
@@ -607,6 +612,17 @@ public final class RiotProfileRepository {
             try storage.save(persisted)
         }
         return repository
+    }
+
+    private static func seedDefaultRelayIfNeeded(profile: MobileProfile) throws {
+        guard try profile.listRelays().isEmpty else { return }
+        try profile.addRelay(
+            relay: RelayRecord(
+                nodeId: AnchorRelayDefaults.relayNodeId,
+                ticketBytes: AnchorRelayDefaults.communityTicket,
+                lastAnsweredUnixSeconds: nil
+            )
+        )
     }
 
     /// Rebuilds the listed space in the freshly-opened core: replays the demo
