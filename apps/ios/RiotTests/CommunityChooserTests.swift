@@ -192,6 +192,7 @@ final class CommunityChooserTests: XCTestCase {
             descriptorEntryId: "desc-1",
             recentActivityUnixSeconds: UInt64(now.timeIntervalSince1970 - 3_600),
             syncFreshnessUnixSeconds: nil,
+            carryAutomatically: true,
             archived: false,
             quarantined: false,
             available: true
@@ -226,6 +227,7 @@ final class CommunityChooserTests: XCTestCase {
             descriptorEntryId: nil,
             recentActivityUnixSeconds: nil,
             syncFreshnessUnixSeconds: nil,
+            carryAutomatically: true,
             archived: archived,
             quarantined: quarantined,
             available: available
@@ -623,6 +625,7 @@ final class CommunityChooserTests: XCTestCase {
                     descriptorEntryId: descriptor,
                     recentActivityUnixSeconds: activity,
                     syncFreshnessUnixSeconds: sync,
+                    carryAutomatically: true,
                     archived: false,
                     quarantined: false,
                     available: true
