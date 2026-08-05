@@ -197,7 +197,13 @@ test("the checked-in current snapshot is fresh against this repository", async (
   const result = await evaluateSnapshotFreshness({ snapshot, repositoryRoot, fs: realFs, sha256 });
   assert.equal(result.state, "PASS", `checked-in snapshot drifted: ${JSON.stringify(result)}`);
   const gates = evaluateConfiguration(snapshot);
-  assert.equal(gate(gates, "config.android.applicationId").state, "BLOCKED");
+  // PASS, not BLOCKED. The snapshot this kit shipped with recorded the Android
+  // applicationId as `org.riot.evidence` and this test pinned the resulting
+  // BLOCKED gate as an outstanding WU-006 task — but `net.protest.riot` had
+  // already landed in #137, BEFORE the snapshot was authored in #155. The gate
+  // was reporting finished work as undone. Ground truth is
+  // apps/android/app/build.gradle.kts:14.
+  assert.equal(gate(gates, "config.android.applicationId").state, "PASS");
   assert.equal(gate(gates, "config.ios.bundleId").state, "PASS");
 });
 

@@ -2629,6 +2629,23 @@ fn namespace_live_ids(
 /// sync requires a durable profile.
 // Consumed by the followed-site drive fns below (FFI-wired in WU4).
 #[allow(dead_code)]
+/// True when this device actually holds the entry's payload bytes.
+///
+/// `SignedWillowEntry::payload_bytes` is a `Vec<u8>`, not an `Option`, while the
+/// durable `live_entries.payload` column is NULLABLE — the store bridges the two
+/// with `payload.unwrap_or_default()`, which hands back an EMPTY payload for an
+/// entry that still declares a non-zero `payload_length`. Nothing rejects that
+/// until something tries to encode it. This predicate is the missing distinction:
+/// an entry that declares payload bytes but carries none is digest-only, and this
+/// device cannot serve it.
+fn holds_payload(signed: &SignedWillowEntry) -> bool {
+    use willow25::entry::Entrylike;
+    let Ok(entry) = riot_core::willow::decode_entry_canonic(&signed.entry_bytes) else {
+        return false;
+    };
+    entry.payload_length() == 0 || !signed.payload_bytes.is_empty()
+}
+
 pub(crate) fn build_followed_site_offer(
     profile: &LocalProfile,
     namespace_id: &[u8; 32],
@@ -2649,7 +2666,22 @@ pub(crate) fn build_followed_site_offer(
         live_ids
             .binary_search(&entry_id(&entry.entry_bytes))
             .is_ok()
+            && holds_payload(entry)
     });
+    // Digest-only entries are live and signed, but their payload bytes were
+    // deliberately never retained (`session.rs`: `retain_payload` is false for
+    // alerts — their content travels as signed bundles, not through this offer).
+    // They cannot be handed to a peer: `encode_bundle` would reject the entry for
+    // declaring a payload length it cannot produce. So the invariant this offer
+    // upholds is "exactly this namespace's live entries WHOSE PAYLOAD THIS DEVICE
+    // HOLDS" — narrower than live_ids, and the equality guard below must compare
+    // against that same narrowed set or it fails every community holding an alert.
+    let offerable_ids = {
+        let mut ids: Vec<_> = offer.iter().map(|e| entry_id(&e.entry_bytes)).collect();
+        ids.sort_unstable();
+        ids
+    };
+    let live_ids = offerable_ids;
     offer.sort_unstable_by_key(|entry| entry_id(&entry.entry_bytes));
     let offer_ids: Vec<_> = offer
         .iter()
@@ -2664,18 +2696,58 @@ pub(crate) fn build_followed_site_offer(
     if offer.len() > MAX_SYNC_IDS {
         return Err(MobileError::SessionLimit);
     }
-    let encoded = encode_bundle(&offer).map_err(|_| MobileError::SessionLimit)?;
+    // NOT SessionLimit: an encode failure here is a data fault or our own bug,
+    // never a capacity ceiling. Reporting it as SessionLimit is what disguised
+    // the digest-only payload bug as "too many sessions" and cost an afternoon.
+    let encoded = encode_bundle(&offer).map_err(|_| MobileError::Internal)?;
     if encoded.len() > MAX_SYNC_INVENTORY_BYTES {
         return Err(MobileError::SessionLimit);
     }
     Ok(offer)
 }
 
+/// The live ids in the ACTIVE namespace that this device can actually put into a
+/// sync inventory — i.e. every live id except the digest-only ones whose payload
+/// bytes were deliberately never retained (alerts; see `holds_payload`).
+///
+/// The inventory and the offer must agree on this set. Narrow the offer without
+/// narrowing the guard and the equality check below fails `Internal` instead —
+/// same bug, different label.
+///
+/// Durable-only: an in-memory store has no `signed_entries_in_namespace`, and its
+/// inventory is installed from imported frames that always carry their payloads,
+/// so there is nothing to narrow and the full live set is returned unchanged.
+fn active_namespace_inventoryable_ids(
+    profile: &LocalProfile,
+) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
+    let mut live_ids = active_namespace_live_ids(profile)?;
+    live_ids.sort_unstable();
+    let Some(space) = profile.space.as_ref() else {
+        return Ok(live_ids);
+    };
+    let namespace_id = parse_entry_id(&space.namespace_id)?;
+    let Some(signed) = profile
+        .store
+        .signed_entries_in_namespace(&namespace_id)
+        .map_err(map_core_error)?
+    else {
+        return Ok(live_ids);
+    };
+    let mut digest_only: Vec<_> = signed
+        .iter()
+        .filter(|entry| !holds_payload(entry))
+        .map(|entry| entry_id(&entry.entry_bytes))
+        .collect();
+    digest_only.sort_unstable();
+    live_ids.retain(|id| digest_only.binary_search(id).is_err());
+    Ok(live_ids)
+}
+
 pub(crate) fn install_sync_inventory(
     profile: &mut LocalProfile,
     mut inventory: Vec<SignedWillowEntry>,
 ) -> Result<(), MobileError> {
-    let mut live_ids = active_namespace_live_ids(profile)?;
+    let mut live_ids = active_namespace_inventoryable_ids(profile)?;
     live_ids.sort_unstable();
     inventory.retain(|signed| live_ids.contains(&entry_id(&signed.entry_bytes)));
     inventory.sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
@@ -2763,7 +2835,7 @@ fn rebuild_sync_inventory(
 pub(crate) fn ensure_complete_sync_inventory(
     profile: &mut LocalProfile,
 ) -> Result<(), MobileError> {
-    let mut live_ids = active_namespace_live_ids(profile)?;
+    let mut live_ids = active_namespace_inventoryable_ids(profile)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
         return Err(MobileError::SessionLimit);

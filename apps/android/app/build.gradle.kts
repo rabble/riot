@@ -20,7 +20,7 @@ android {
         versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
         // Matches CFBundleShortVersionString on iOS/macOS. All three platforms
         // ship one version string; they are the same app.
-        versionName = "0.1.2"
+        versionName = "0.1.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

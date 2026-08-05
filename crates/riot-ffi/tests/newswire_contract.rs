@@ -1944,7 +1944,7 @@ fn a_newly_joined_community_carries_by_default_and_can_be_made_manual() {
         &reference,
         "River City Wire",
         vec![21u8; 32],
-        &[space.signed_bytes.clone()],
+        std::slice::from_ref(&space.signed_bytes),
     );
 
     // Public broadcast: a newly joined community spreads unless told otherwise.
@@ -1968,13 +1968,10 @@ fn a_newly_joined_community_carries_by_default_and_can_be_made_manual() {
 
     // Marking it manual must NOT break a deliberate exchange — the person can
     // still choose to hand it over.
-    assert!(
-        device
-            .sync_offer_for_community(reference.namespace_id.clone())
-            .expect("a manual community can still be offered deliberately")
-            .len()
-            > 0
-    );
+    assert!(!device
+        .sync_offer_for_community(reference.namespace_id.clone())
+        .expect("a manual community can still be offered deliberately")
+        .is_empty());
 
     device
         .set_community_carry_policy(reference.namespace_id.clone(), true)
@@ -2015,7 +2012,7 @@ fn the_carry_policy_survives_a_relaunch() {
             &reference,
             "Legal Support",
             key.clone(),
-            &[space.signed_bytes.clone()],
+            std::slice::from_ref(&space.signed_bytes),
         );
         device
             .set_community_carry_policy(reference.namespace_id.clone(), false)
