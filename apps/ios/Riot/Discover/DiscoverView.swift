@@ -20,6 +20,9 @@ public struct DiscoverView: View {
     @StateObject private var model: CommunityDiscoveryModel
 
     private let onJoin: (DiscoverableCommunity) -> Void
+    /// Where the "ways in that work today" lead. Discover cannot complete a join
+    /// for a row carrying no coordinate, so it hands the person to a route that can.
+    private let onAlternative: (JoinAlternative) -> Void
     private let onImportCrew: () -> Void
     private let onCreate: () -> Void
     private let onClose: () -> Void
@@ -27,12 +30,14 @@ public struct DiscoverView: View {
     public init(
         source: CommunityDirectory = SeededCommunityDirectory(),
         onJoin: @escaping (DiscoverableCommunity) -> Void,
+        onAlternative: @escaping (JoinAlternative) -> Void = { _ in },
         onImportCrew: @escaping () -> Void,
         onCreate: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         _model = StateObject(wrappedValue: CommunityDiscoveryModel(source: source))
         self.onJoin = onJoin
+        self.onAlternative = onAlternative
         self.onImportCrew = onImportCrew
         self.onCreate = onCreate
         self.onClose = onClose
@@ -54,9 +59,11 @@ public struct DiscoverView: View {
             }
             .riotHeader(eyebrow: "Discover", "Find your people")
             .navigationDestination(for: DiscoverableCommunity.self) { community in
-                CommunityPreviewView(community: community) {
-                    onJoin(community)
-                }
+                CommunityPreviewView(
+                    community: community,
+                    onJoin: { onJoin(community) },
+                    onAlternative: onAlternative
+                )
             }
             .safeAreaInset(edge: .bottom) {
                 Button("Done", action: onClose)
@@ -294,10 +301,16 @@ public struct CommunityPreviewView: View {
     @Environment(\.colorScheme) private var colorScheme
     let community: DiscoverableCommunity
     let onJoin: () -> Void
+    let onAlternative: (JoinAlternative) -> Void
 
-    public init(community: DiscoverableCommunity, onJoin: @escaping () -> Void) {
+    public init(
+        community: DiscoverableCommunity,
+        onJoin: @escaping () -> Void,
+        onAlternative: @escaping (JoinAlternative) -> Void = { _ in }
+    ) {
         self.community = community
         self.onJoin = onJoin
+        self.onAlternative = onAlternative
     }
 
     public var body: some View {
@@ -306,23 +319,42 @@ public struct CommunityPreviewView: View {
                 aboutCard
                 stewardCard
                 whatsNewCard
-                if community.isSeed {
-                    Text("This is a sample listing. The live directory of signed community feeds is coming; joining routes through the same paste-a-link flow you already use.")
+                // The offer follows the coordinate, never the cosmetics. A row that
+                // cannot be joined says so and points at the routes that work,
+                // instead of naming this community on a button that then asks the
+                // person to supply its link themselves.
+                switch CommunityJoinAffordance.of(community) {
+                case let .join(title):
+                    Button(title, action: onJoin)
+                        .buttonStyle(.riotPrimary)
+                        .accessibilityIdentifier("preview-join")
+                case let .unavailable(note, alternatives):
+                    Text(note)
                         .font(.riot(.body, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("preview-sample-note")
+                    Text("Ways in that work today")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    ForEach(alternatives, id: \.self) { alternative in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Button(alternative.title) { onAlternative(alternative) }
+                                .buttonStyle(.riotSecondary)
+                                .accessibilityIdentifier("preview-alt-\(alternative.rawValue)")
+                            Text(alternative.explanation)
+                                .font(.riot(.body, size: 12, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
-                Button(joinButtonTitle, action: onJoin)
-                    .buttonStyle(.riotPrimary)
-                    .accessibilityIdentifier("preview-join")
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Preview", community.name)
-    }
-
-    private var joinButtonTitle: String {
-        community.isOpen ? "Join \(community.name)" : "Ask to join \(community.name)"
     }
 
     private var aboutCard: some View {

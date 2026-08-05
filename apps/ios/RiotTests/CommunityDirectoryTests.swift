@@ -166,4 +166,66 @@ final class CommunityDirectoryTests: XCTestCase {
             XCTFail("a community carrying a reference must route into commit-join")
         }
     }
+
+    // MARK: - Every offer must be real (goal 6)
+
+    /// A sample row cannot be joined, so it must never render a button that says
+    /// "Join <name>". That button named a specific community and then opened
+    /// "Paste a link someone shared" — asking the person to supply the very thing
+    /// they came here to find.
+    func testASampleOffersNoJoinButtonAndNamesWhatItIs() {
+        for seed in SeededCommunityDirectory().discoverableCommunities() {
+            let affordance = CommunityJoinAffordance.of(seed)
+            guard case let .unavailable(note, alternatives) = affordance else {
+                return XCTFail("\(seed.name): a sample must not offer a join")
+            }
+            XCTAssertFalse(
+                note.lowercased().contains("join \(seed.name.lowercased())"),
+                "the note must not promise a join it cannot complete"
+            )
+            XCTAssertFalse(alternatives.isEmpty, "say what DOES work instead")
+        }
+    }
+
+    /// `isOpen` currently changes only the wording ("Join" vs "Ask to join") while
+    /// both do the identical unjoinable thing. An open community must not appear
+    /// to offer something a closed one does not, when neither can be joined.
+    func testOpenAndClosedSamplesOfferTheSameThingWhenNeitherCanBeJoined() {
+        let seeds = SeededCommunityDirectory().discoverableCommunities()
+        guard let open = seeds.first(where: { $0.isOpen }),
+              let closed = seeds.first(where: { !$0.isOpen })
+        else { return XCTFail("fixture needs one open and one invite-only sample") }
+        XCTAssertEqual(
+            CommunityJoinAffordance.of(open).alternatives,
+            CommunityJoinAffordance.of(closed).alternatives,
+            "openness must not imply a different action while neither can be joined"
+        )
+    }
+
+    /// The three paths that actually work today. Reading without joining is a
+    /// first-class outcome, not a buried paste-a-ticket sheet.
+    func testTheOfferedAlternativesAreOnlyPathsThatActuallyWork() {
+        let seed = SeededCommunityDirectory().discoverableCommunities().first!
+        let alternatives = CommunityJoinAffordance.of(seed).alternatives
+        XCTAssertEqual(Set(alternatives), Set([.linkOrQR, .nearby, .follow]))
+        for alternative in alternatives {
+            XCTAssertFalse(alternative.title.isEmpty)
+            XCTAssertFalse(alternative.explanation.isEmpty)
+        }
+    }
+
+    /// A row from a real feed still joins directly — the affordance switches on
+    /// whether a coordinate exists, never on cosmetics.
+    func testARowWithARealReferenceStillOffersADirectJoin() {
+        let live = DiscoverableCommunity(
+            id: "live-1", name: "Harbor Mutual Aid",
+            about: "a", category: .help, stewardName: "s",
+            peopleCount: 1, activityHint: "h", isOpen: true, whatsNew: [],
+            isSeed: false, joinReference: "riot://join/abc"
+        )
+        guard case let .join(title) = CommunityJoinAffordance.of(live) else {
+            return XCTFail("a row carrying a reference must offer a direct join")
+        }
+        XCTAssertTrue(title.contains("Harbor Mutual Aid"))
+    }
 }
