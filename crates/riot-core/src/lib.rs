@@ -16,6 +16,8 @@ pub mod governance;
 /// convention only; protocol identity lives in [`willow::identity`].
 pub mod identity;
 pub mod import;
+/// LoRa/Meshtastic datagram profile — see `docs/superpowers/specs/2026-08-05-lora-meshtastic-transport-design.md`.
+pub mod lora;
 pub mod meadowcap;
 pub mod model;
 pub mod newswire;
