@@ -1826,6 +1826,21 @@ public final class RiotAppModel: ObservableObject {
     /// the paste-QR sheet. See `RiotAppModel.requestDiscover` in DiscoverView.swift.
     @Published public var isDiscoverPresented = false
 
+    /// Following a site is a first-class way to engage, not a lesser one: a reader
+    /// who wants a community's reporting without joining it is a real person with a
+    /// real need. It used to be reachable only from the onboarding shell, so anyone
+    /// already in a community had no route to it at all.
+    @Published public var isFollowSitePresented = false
+
+    /// Opens the follow-a-site sheet, closing Discover first so the person does not
+    /// land behind a sheet they cannot see.
+    public func requestFollowSite() {
+        isDiscoverPresented = false
+        isFollowSitePresented = true
+    }
+
+    public func dismissFollowSite() { isFollowSitePresented = false }
+
     /// The launch state the shell renders before any route: loading while the
     /// profile opens, no-community when there is none, the community's Home when
     /// there is one, or in-place recovery when a retained one cannot open. Never

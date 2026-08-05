@@ -232,6 +232,66 @@ public enum CommunityJoinRoute: Equatable {
     }
 }
 
+/// What a Discover row can HONESTLY offer.
+///
+/// The old surface rendered "Join <name>" on every row and routed the ones with
+/// no coordinate into "Paste a link someone shared" — naming a community and then
+/// asking the person to supply it themselves. Worse, `isOpen` flipped the wording
+/// between "Join" and "Ask to join" while both did the identical unjoinable thing,
+/// so openness read as a difference in what would happen when it was decoration.
+///
+/// This type makes the offer follow the coordinate: a row that can be joined says
+/// so, and a row that cannot says what it is and points at the paths that work.
+public enum CommunityJoinAffordance: Equatable {
+    /// This row carries a real coordinate. Joining completes.
+    case join(title: String)
+    /// Nothing here can be joined yet. Say that plainly, and offer the real routes.
+    case unavailable(note: String, alternatives: [JoinAlternative])
+
+    public static func of(_ community: DiscoverableCommunity) -> CommunityJoinAffordance {
+        if community.joinReference != nil {
+            return .join(title: "Join \(community.name)")
+        }
+        // Deliberately independent of `isOpen`: with no coordinate, an open
+        // community is exactly as joinable as an invite-only one — none.
+        return .unavailable(
+            note: "This is a sample listing. The live directory of signed community "
+                + "feeds isn't built yet, so this one can't be opened from here.",
+            alternatives: [.linkOrQR, .nearby, .follow]
+        )
+    }
+
+    /// The alternatives this affordance offers; empty for a direct join.
+    public var alternatives: [JoinAlternative] {
+        if case let .unavailable(_, alternatives) = self { return alternatives }
+        return []
+    }
+}
+
+/// The ways into a community that actually work today. Reading without joining is
+/// one of them — a reader is a real person, not a lesser member.
+public enum JoinAlternative: String, Equatable, Hashable, CaseIterable {
+    case linkOrQR
+    case nearby
+    case follow
+
+    public var title: String {
+        switch self {
+        case .linkOrQR: "Join with a link or QR"
+        case .nearby: "Find one nearby"
+        case .follow: "Follow a site"
+        }
+    }
+
+    public var explanation: String {
+        switch self {
+        case .linkOrQR: "Someone in the community sends you a link, or you scan the QR on a flyer."
+        case .nearby: "Meet someone who already has it. No internet needed."
+        case .follow: "Read a community's reporting without joining it."
+        }
+    }
+}
+
 /// Discover surface logic with no FFI of its own — it reads communities only
 /// through `CommunityDirectory`, and its search + category filtering is a pure
 /// static function the tests call directly. The twin of `RiotDirectoryModel` for

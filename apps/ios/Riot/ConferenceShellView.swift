@@ -458,6 +458,7 @@ private struct OnboardingSetupView: View {
         .sheet(isPresented: $isDiscoverPresented) {
             DiscoverView(
                 onJoin: handleDiscoverJoin,
+                onAlternative: handleDiscoverAlternative,
                 onImportCrew: {
                     isDiscoverPresented = false
                     isJoinPresented = true
@@ -504,6 +505,18 @@ private struct OnboardingSetupView: View {
     /// existing join flow: a real reference is committed directly, a seed with no
     /// reference falls back to the paste/QR sheet. Kept local to onboarding so the
     /// join sheet it opens is this view's own.
+    /// A sample row cannot be joined, so Discover hands the person to a route that
+    /// works rather than leaving them on a screen that names a community it cannot
+    /// open. Reading without joining is one of those routes, not a lesser one.
+    private func handleDiscoverAlternative(_ alternative: JoinAlternative) {
+        isDiscoverPresented = false
+        switch alternative {
+        case .linkOrQR: isJoinPresented = true
+        case .nearby: model.select(.nearby)
+        case .follow: isFollowSitePresented = true
+        }
+    }
+
     private func handleDiscoverJoin(_ community: DiscoverableCommunity) {
         isDiscoverPresented = false
         switch CommunityJoinRoute.route(for: community) {
@@ -1193,6 +1206,14 @@ private struct CommunityShellView: View {
             .sheet(isPresented: $model.isDiscoverPresented) {
                 DiscoverView(
                     onJoin: { model.joinDiscovered($0) },
+                    onAlternative: { alternative in
+                        model.dismissDiscover()
+                        switch alternative {
+                        case .linkOrQR: model.requestJoinByReference()
+                        case .nearby: model.findNearby()
+                        case .follow: model.requestFollowSite()
+                        }
+                    },
                     onImportCrew: {
                         model.dismissDiscover()
                         model.requestJoinByReference()
@@ -1203,6 +1224,12 @@ private struct CommunityShellView: View {
                     },
                     onClose: model.dismissDiscover
                 )
+            }
+            // Follow a site — reachable from inside a community, not just onboarding.
+            // A reader wanting a community's reporting without joining had no route
+            // here at all before; Discover's "ways in that work today" lands on it.
+            .sheet(isPresented: $model.isFollowSitePresented) {
+                FollowSiteSheet(model: model, onClose: model.dismissFollowSite)
             }
             // Create another community — the chooser's "Create a community" row.
             .sheet(isPresented: createCommunityBinding) {
